@@ -1697,6 +1697,9 @@ class PokerServer:
         self.tournaments: Dict[str, Tournament] = {}
         self.lobby_users: Set[str] = set()
         
+        # Sistema reconnect: traccia tavolo attivo per ogni user_id
+        self.user_active_tables: Dict[int, dict] = {}  # user_id -> {table_id, stack, seat}
+        
         # Crea tavoli predefiniti
         self._create_default_tables()
     
@@ -1723,15 +1726,29 @@ class PokerServer:
         return conn_id
     
     async def unregister(self, conn_id: str):
-        """Rimuove una connessione"""
+        """Rimuove una connessione - ma salva stato per reconnect"""
         if conn_id in self.clients:
             del self.clients[conn_id]
         
         if conn_id in self.players:
-            # Rimuovi da tavoli
-            for table in self.tables.values():
+            player_info = self.players[conn_id]
+            user_id = player_info.get('user_id')
+            
+            # Salva stato tavolo per possibile reconnect
+            for table_id, table in self.tables.items():
                 if conn_id in table.players:
-                    table.remove_player(conn_id)
+                    player = table.players[conn_id]
+                    # Segna come disconnesso invece di rimuovere
+                    player.is_connected = False
+                    # Salva info per reconnect (conserva per 5 minuti)
+                    self.user_active_tables[user_id] = {
+                        'table_id': table_id,
+                        'stack': player.chips,
+                        'seat': player.seat,
+                        'disconnected_at': time.time()
+                    }
+                    print(f"[RECONNECT] User {user_id} disconnesso dal tavolo {table_id}, stack salvato: {player.chips}")
+            
             del self.players[conn_id]
         
         self.lobby_users.discard(conn_id)
@@ -1794,6 +1811,9 @@ class PokerServer:
             'get_friend_games': self.handle_get_friend_games,
             'create_friend_game': self.handle_create_friend_game,
             'join_friend_game': self.handle_join_friend_game,
+            # Reconnect handler
+            'check_active_table': self.handle_check_active_table,
+            'reconnect_table': self.handle_reconnect_table,
         }
         
         handler = handlers.get(action)
@@ -2713,6 +2733,161 @@ class PokerServer:
             'type': 'friend_game_joined',
             **result
         })
+    
+    async def handle_check_active_table(self, conn_id: str, message: dict):
+        """Controlla se l'utente ha un tavolo attivo da riconnettersi"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'active_table_check',
+                'has_active_table': False,
+                'error': 'Devi essere loggato'
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        
+        # Pulisci tavoli scaduti (più di 5 minuti)
+        current_time = time.time()
+        expired = [uid for uid, info in self.user_active_tables.items() 
+                   if current_time - info.get('disconnected_at', 0) > 300]  # 5 minuti
+        for uid in expired:
+            # Rimuovi giocatore dal tavolo
+            info = self.user_active_tables[uid]
+            table_id = info['table_id']
+            if table_id in self.tables:
+                table = self.tables[table_id]
+                for pid, player in list(table.players.items()):
+                    if player.user_id == uid:
+                        table.remove_player(pid)
+                        print(f"[RECONNECT] Rimosso giocatore scaduto {uid} dal tavolo {table_id}")
+            del self.user_active_tables[uid]
+        
+        # Controlla se utente ha tavolo attivo
+        if user_id in self.user_active_tables:
+            info = self.user_active_tables[user_id]
+            table_id = info['table_id']
+            
+            if table_id in self.tables:
+                table = self.tables[table_id]
+                await self.send_to(conn_id, {
+                    'type': 'active_table_check',
+                    'has_active_table': True,
+                    'table_id': table_id,
+                    'table_name': table.name,
+                    'stack': info['stack'],
+                    'seat': info['seat'],
+                    'small_blind': table.small_blind,
+                    'big_blind': table.big_blind
+                })
+                return
+        
+        await self.send_to(conn_id, {
+            'type': 'active_table_check',
+            'has_active_table': False
+        })
+    
+    async def handle_reconnect_table(self, conn_id: str, message: dict):
+        """Riconnetti l'utente al tavolo precedente"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'table_reconnected',
+                'success': False,
+                'error': 'Devi essere loggato'
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        username = self.players[conn_id]['username']
+        
+        if user_id not in self.user_active_tables:
+            await self.send_to(conn_id, {
+                'type': 'table_reconnected',
+                'success': False,
+                'error': 'Nessun tavolo attivo trovato'
+            })
+            return
+        
+        info = self.user_active_tables[user_id]
+        table_id = info['table_id']
+        saved_stack = info['stack']
+        saved_seat = info['seat']
+        
+        if table_id not in self.tables:
+            del self.user_active_tables[user_id]
+            await self.send_to(conn_id, {
+                'type': 'table_reconnected',
+                'success': False,
+                'error': 'Il tavolo non esiste più'
+            })
+            return
+        
+        table = self.tables[table_id]
+        
+        # Trova il vecchio player e aggiornalo
+        old_conn_id = None
+        for pid, player in table.players.items():
+            if player.user_id == user_id:
+                old_conn_id = pid
+                break
+        
+        if old_conn_id:
+            # Rimuovi vecchio player
+            old_player = table.players.pop(old_conn_id)
+            
+            # Crea nuovo player con stesso stato
+            new_player = Player(
+                id=conn_id,
+                username=username,
+                user_id=user_id,
+                chips=saved_stack,
+                seat=saved_seat
+            )
+            new_player.is_connected = True
+            new_player.cards = old_player.cards
+            new_player.current_bet = old_player.current_bet
+            new_player.is_folded = old_player.is_folded
+            new_player.is_all_in = old_player.is_all_in
+            
+            table.players[conn_id] = new_player
+        else:
+            # Player non trovato, creane uno nuovo
+            new_player = Player(
+                id=conn_id,
+                username=username,
+                user_id=user_id,
+                chips=saved_stack,
+                seat=saved_seat
+            )
+            table.players[conn_id] = new_player
+        
+        # Rimuovi da tracking
+        del self.user_active_tables[user_id]
+        
+        print(f"[RECONNECT] User {user_id} riconnesso al tavolo {table_id} con stack {saved_stack}")
+        
+        # Invia stato tavolo
+        await self.send_to(conn_id, {
+            'type': 'table_reconnected',
+            'success': True,
+            'table_id': table_id,
+            'table_name': table.name,
+            'stack': saved_stack,
+            'seat': saved_seat,
+            'game_state': table.state.value,
+            'pot': table.pot,
+            'community_cards': [c.to_dict() for c in table.community_cards],
+            'players': [p.to_dict() for p in table.players.values()],
+            'small_blind': table.small_blind,
+            'big_blind': table.big_blind
+        })
+        
+        # Notifica altri giocatori
+        await self.broadcast_table(table_id, {
+            'type': 'player_reconnected',
+            'player_id': conn_id,
+            'username': username,
+            'seat': saved_seat
+        }, exclude=conn_id)
     
     async def handler(self, websocket: websockets.WebSocketServerProtocol):
         """Handler principale per le connessioni WebSocket"""
