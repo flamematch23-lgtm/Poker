@@ -43,8 +43,8 @@ DATABASE_FILE = "poker_database.db"
 # ============================================
 # PAYPAL API CONFIGURATION
 # ============================================
-PAYPAL_CLIENT_ID = "AdVh2EpipQm930-jBn_EiP_2wxKjIaE5q5-trEjPa1c2q2HLNntj9PvseFSkvl9OVq_59_t8ICZzfLR9"
-PAYPAL_SECRET = "EGXekVw-r7DhFjo4rCcm8U6x0Euh3h7iQpu67FxODbaAVL14-I0vjZBE-37a-9cIHJSMm0bhAETUc1oK"
+PAYPAL_CLIENT_ID = "ATGUiTFJ0G6kKrJ4RYJ0sg80pZ3qlTqK8WFkIieVu2fU0X354vLFsyel8QVKleajel1ZpgslVsliuVAI"
+PAYPAL_SECRET = "EPsoCGBkuF3LI8KQKbTWBDhjw6f4gc2RUscrAw9W3baDJlU-0ZyKnuU6qVmAnGbzmn12AcMNcbRRYGgB"
 # Use sandbox for testing, change to live for production
 PAYPAL_MODE = "sandbox"  # "sandbox" or "live"
 PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
