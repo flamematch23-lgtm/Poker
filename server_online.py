@@ -41,10 +41,10 @@ MIN_PLAYERS_TO_START = 2
 DATABASE_FILE = "poker_database.db"
 
 # ============================================
-# PAYPAL API CONFIGURATION
+# PAYPAL API CONFIGURATION (reads from env vars or uses defaults)
 # ============================================
-PAYPAL_CLIENT_ID = "ATGUiTFJ0G6kKrJ4RYJ0sg80pZ3qlTqK8WFkIieVu2fU0X354vLFsyel8QVKleajel1ZpgslVsliuVAI"
-PAYPAL_SECRET = "EPsoCGBkuF3LI8KQKbTWBDhjw6f4gc2RUscrAw9W3baDJlU-0ZyKnuU6qVmAnGbzmn12AcMNcbRRYGgB"
+PAYPAL_CLIENT_ID = os.environ.get("PAYPAL_CLIENT_ID", "ATGUiTFJ0G6kKrJ4RYJ0sg80pZ3qlTqK8WFkIieVu2fU0X354vLFsyel8QVKleajel1ZpgslVsliuVAI")
+PAYPAL_SECRET = os.environ.get("PAYPAL_SECRET", "EPsoCGBkuF3LI8KQKbTWBDhjw6f4gc2RUscrAw9W3baDJlU-0ZyKnuU6qVmAnGbzmn12AcMNcbRRYGgB")
 # Use sandbox for testing, change to live for production
 PAYPAL_MODE = "sandbox"  # "sandbox" or "live"
 PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
