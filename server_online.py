@@ -278,6 +278,8 @@ class DatabaseManager:
         self.conn = sqlite3.connect(db_file, timeout=30.0, check_same_thread=False)
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('PRAGMA busy_timeout=30000')
+        # Expose cursor for direct SQL access
+        self.cursor = self.conn.cursor()
         self.init_database()
     
     def get_connection(self):
