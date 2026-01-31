@@ -604,6 +604,108 @@ class DatabaseManager:
         
         cursor.execute('SELECT gold_tokens FROM wallets WHERE user_id = ?', (user_id,))
         return cursor.fetchone()[0]
+    
+    # ============================================
+    # PRIVATE/FRIEND GAMES METHODS
+    # ============================================
+    
+    def create_private_game(self, creator_id: int, name: str, password: str, 
+                           game_type: str, settings: dict) -> dict:
+        """Crea una partita privata tra amici"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        game_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        
+        try:
+            cursor.execute('''
+                INSERT INTO private_games 
+                (game_id, type, name, password_hash, creator_id, settings, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'waiting')
+            ''', (game_id, game_type, name, password_hash, creator_id, json.dumps(settings)))
+            
+            conn.commit()
+            
+            return {
+                'success': True,
+                'game_id': game_id,
+                'name': name,
+                'type': game_type
+            }
+        except sqlite3.IntegrityError:
+            return {'success': False, 'error': 'Nome partita già in uso'}
+    
+    def get_private_games(self, user_id: int = None) -> list:
+        """Ottiene le partite private"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if user_id:
+            cursor.execute('''
+                SELECT pg.game_id, pg.type, pg.name, u.username, pg.settings, pg.status, pg.created_at
+                FROM private_games pg
+                JOIN users u ON pg.creator_id = u.id
+                WHERE pg.creator_id = ? OR pg.status = 'waiting'
+                ORDER BY pg.created_at DESC
+                LIMIT 50
+            ''', (user_id,))
+        else:
+            cursor.execute('''
+                SELECT pg.game_id, pg.type, pg.name, u.username, pg.settings, pg.status, pg.created_at
+                FROM private_games pg
+                JOIN users u ON pg.creator_id = u.id
+                WHERE pg.status = 'waiting'
+                ORDER BY pg.created_at DESC
+                LIMIT 50
+            ''')
+        
+        rows = cursor.fetchall()
+        games = []
+        
+        for row in rows:
+            settings = json.loads(row[4]) if row[4] else {}
+            games.append({
+                'id': row[0],
+                'game_type': row[1],
+                'name': row[2],
+                'creator': row[3],
+                'buy_in': settings.get('buy_in', 0),
+                'max_players': settings.get('max_players', 6),
+                'small_blind': settings.get('small_blind', 1),
+                'big_blind': settings.get('big_blind', 2),
+                'current_players': 0,  # TODO: Track actual players
+                'status': row[5],
+                'created_at': row[6]
+            })
+        
+        return games
+    
+    def join_private_game(self, user_id: int, game_name: str, password: str) -> dict:
+        """Unisciti a una partita privata"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        cursor.execute('''
+            SELECT game_id, type, name, settings, status
+            FROM private_games
+            WHERE name = ? AND password_hash = ? AND status = 'waiting'
+        ''', (game_name, password_hash))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            return {'success': False, 'error': 'Partita non trovata o password errata'}
+        
+        return {
+            'success': True,
+            'game_id': row[0],
+            'type': row[1],
+            'name': row[2],
+            'settings': json.loads(row[3]) if row[3] else {}
+        }
 
 
 # ============================================
@@ -1493,6 +1595,10 @@ class PokerServer:
             'create_private_tournament': self.handle_create_private_tournament,
             'create_private_cashgame': self.handle_create_private_cashgame,
             'join_private_game': self.handle_join_private_game,
+            # Friend games handlers (new)
+            'get_friend_games': self.handle_get_friend_games,
+            'create_friend_game': self.handle_create_friend_game,
+            'join_friend_game': self.handle_join_friend_game,
         }
         
         handler = handlers.get(action)
@@ -2136,12 +2242,107 @@ class PokerServer:
         game_name = message.get('game_name', '')
         password = message.get('password', '')
         
-        # In a full implementation, verify password and join game
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'join_private_result',
+                'success': False,
+                'error': 'Devi essere loggato'
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        result = self.db.join_private_game(user_id, game_name, password)
+        
         await self.send_to(conn_id, {
             'type': 'join_private_result',
-            'success': False,
-            'error': 'Partita non trovata o password errata',
+            **result,
             'message_id': message.get('message_id')
+        })
+    
+    async def handle_get_friend_games(self, conn_id: str, message: dict):
+        """Ottiene la lista delle partite tra amici"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'friend_games_list',
+                'games': []
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        games = self.db.get_private_games(user_id)
+        
+        await self.send_to(conn_id, {
+            'type': 'friend_games_list',
+            'games': games
+        })
+    
+    async def handle_create_friend_game(self, conn_id: str, message: dict):
+        """Crea una nuova partita tra amici"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_created',
+                'success': False,
+                'error': 'Devi essere loggato'
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        name = message.get('name', '')
+        password = message.get('password', '')
+        game_type = message.get('game_type', 'cashgame')
+        
+        if not name or not password:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_created',
+                'success': False,
+                'error': 'Nome e password sono obbligatori'
+            })
+            return
+        
+        settings = {
+            'buy_in': message.get('buy_in', 10),
+            'max_players': message.get('max_players', 6),
+            'small_blind': message.get('small_blind', 1),
+            'big_blind': message.get('big_blind', 2),
+            'blind_increase_minutes': message.get('blind_increase_minutes', 10),
+            'max_buy_in': message.get('max_buy_in', 100),
+            'action_timer': message.get('action_timer', 30)
+        }
+        
+        result = self.db.create_private_game(user_id, name, password, game_type, settings)
+        
+        await self.send_to(conn_id, {
+            'type': 'friend_game_created',
+            **result
+        })
+    
+    async def handle_join_friend_game(self, conn_id: str, message: dict):
+        """Unisciti a una partita tra amici"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': False,
+                'error': 'Devi essere loggato'
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        game_name = message.get('game_name', '')
+        password = message.get('password', '')
+        
+        if not game_name or not password:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': False,
+                'error': 'Nome e password sono obbligatori'
+            })
+            return
+        
+        result = self.db.join_private_game(user_id, game_name, password)
+        
+        await self.send_to(conn_id, {
+            'type': 'friend_game_joined',
+            **result
         })
     
     async def handler(self, websocket: websockets.WebSocketServerProtocol):
