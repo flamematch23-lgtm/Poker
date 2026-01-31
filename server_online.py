@@ -22,6 +22,8 @@ import hashlib
 import time
 import sqlite3
 import threading
+import aiohttp
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, asdict
@@ -37,6 +39,15 @@ SERVER_PORT = int(os.environ.get("PORT", 8765))  # Usa PORT da ambiente per clou
 MAX_PLAYERS_PER_TABLE = 9
 MIN_PLAYERS_TO_START = 2
 DATABASE_FILE = "poker_database.db"
+
+# ============================================
+# PAYPAL API CONFIGURATION
+# ============================================
+PAYPAL_CLIENT_ID = "AdVh2EpipQm930-jBn_EiP_2wxKjIaE5q5-trEjPa1c2q2HLNntj9PvseFSkvl9OVq_59_t8ICZzfLR9"
+PAYPAL_SECRET = "EGXekVw-r7DhFjo4rCcm8U6x0Euh3h7iQpu67FxODbaAVL14-I0vjZBE-37a-9cIHJSMm0bhAETUc1oK"
+# Use sandbox for testing, change to live for production
+PAYPAL_MODE = "sandbox"  # "sandbox" or "live"
+PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
 
 # ============================================
 # ENUMS E COSTANTI
@@ -72,6 +83,189 @@ HAND_RANKINGS = {
     'straight_flush': 9,
     'royal_flush': 10
 }
+
+# ============================================
+# PAYPAL API FUNCTIONS
+# ============================================
+
+class PayPalAPI:
+    """Handles all PayPal API interactions"""
+    
+    def __init__(self):
+        self.access_token = None
+        self.token_expiry = 0
+    
+    async def get_access_token(self) -> str:
+        """Get OAuth2 access token from PayPal"""
+        if self.access_token and time.time() < self.token_expiry:
+            return self.access_token
+        
+        auth_string = f"{PAYPAL_CLIENT_ID}:{PAYPAL_SECRET}"
+        auth_bytes = base64.b64encode(auth_string.encode()).decode()
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{PAYPAL_API_BASE}/v1/oauth2/token",
+                headers={
+                    "Authorization": f"Basic {auth_bytes}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                data="grant_type=client_credentials"
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    self.access_token = data["access_token"]
+                    self.token_expiry = time.time() + data.get("expires_in", 3600) - 60
+                    return self.access_token
+                else:
+                    error = await resp.text()
+                    raise Exception(f"PayPal auth failed: {error}")
+    
+    async def create_order(self, amount: float, currency: str = "EUR", 
+                          description: str = "Poker Chips Deposit") -> dict:
+        """Create a PayPal order for deposit"""
+        token = await self.get_access_token()
+        
+        order_data = {
+            "intent": "CAPTURE",
+            "purchase_units": [{
+                "amount": {
+                    "currency_code": currency,
+                    "value": f"{amount:.2f}"
+                },
+                "description": description
+            }],
+            "application_context": {
+                "brand_name": "PokerTexas",
+                "landing_page": "NO_PREFERENCE",
+                "user_action": "PAY_NOW",
+                "return_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel"
+            }
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{PAYPAL_API_BASE}/v2/checkout/orders",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=order_data
+            ) as resp:
+                if resp.status in [200, 201]:
+                    data = await resp.json()
+                    # Find approval URL
+                    approval_url = None
+                    for link in data.get("links", []):
+                        if link.get("rel") == "approve":
+                            approval_url = link.get("href")
+                            break
+                    return {
+                        "success": True,
+                        "order_id": data["id"],
+                        "status": data["status"],
+                        "approval_url": approval_url
+                    }
+                else:
+                    error = await resp.text()
+                    return {"success": False, "error": f"Failed to create order: {error}"}
+    
+    async def capture_order(self, order_id: str) -> dict:
+        """Capture (complete) a PayPal order after user approval"""
+        token = await self.get_access_token()
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}/capture",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            ) as resp:
+                if resp.status in [200, 201]:
+                    data = await resp.json()
+                    # Extract capture details
+                    captures = data.get("purchase_units", [{}])[0].get("payments", {}).get("captures", [])
+                    if captures:
+                        capture = captures[0]
+                        return {
+                            "success": True,
+                            "capture_id": capture.get("id"),
+                            "status": capture.get("status"),
+                            "amount": float(capture.get("amount", {}).get("value", 0)),
+                            "currency": capture.get("amount", {}).get("currency_code", "EUR")
+                        }
+                    return {"success": True, "status": data.get("status")}
+                else:
+                    error = await resp.text()
+                    return {"success": False, "error": f"Failed to capture order: {error}"}
+    
+    async def get_order_details(self, order_id: str) -> dict:
+        """Get details of a PayPal order"""
+        token = await self.get_access_token()
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}",
+                headers={
+                    "Authorization": f"Bearer {token}"
+                }
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {"success": True, "order": data}
+                else:
+                    error = await resp.text()
+                    return {"success": False, "error": error}
+    
+    async def send_payout(self, recipient_email: str, amount: float, 
+                         currency: str = "EUR", note: str = "Poker winnings withdrawal") -> dict:
+        """Send money to user via PayPal Payouts API"""
+        token = await self.get_access_token()
+        
+        batch_id = f"PAYOUT_{int(time.time())}_{random.randint(1000, 9999)}"
+        
+        payout_data = {
+            "sender_batch_header": {
+                "sender_batch_id": batch_id,
+                "email_subject": "PokerTexas - Prelievo",
+                "email_message": "Hai ricevuto il tuo prelievo da PokerTexas!"
+            },
+            "items": [{
+                "recipient_type": "EMAIL",
+                "amount": {
+                    "value": f"{amount:.2f}",
+                    "currency": currency
+                },
+                "receiver": recipient_email,
+                "note": note,
+                "sender_item_id": f"ITEM_{batch_id}"
+            }]
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{PAYPAL_API_BASE}/v1/payments/payouts",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json=payout_data
+            ) as resp:
+                if resp.status in [200, 201]:
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "payout_batch_id": data.get("batch_header", {}).get("payout_batch_id"),
+                        "batch_status": data.get("batch_header", {}).get("batch_status")
+                    }
+                else:
+                    error = await resp.text()
+                    return {"success": False, "error": f"Payout failed: {error}"}
+
+# Global PayPal API instance
+paypal_api = PayPalAPI()
 
 # ============================================
 # DATABASE MANAGER
@@ -1589,6 +1783,7 @@ class PokerServer:
             # Wallet handlers
             'get_wallet': self.handle_get_wallet,
             'wallet_deposit': self.handle_wallet_deposit,
+            'capture_deposit': self.handle_capture_deposit,
             'wallet_withdraw': self.handle_wallet_withdraw,
             'get_transactions': self.handle_get_transactions,
             # Private games handlers
@@ -2139,7 +2334,7 @@ class PokerServer:
         })
     
     async def handle_wallet_deposit(self, conn_id: str, message: dict):
-        """Processa un deposito"""
+        """Creates a PayPal order for deposit - Step 1"""
         if conn_id not in self.players:
             await self.send_to(conn_id, {
                 'type': 'wallet_deposit_result',
@@ -2151,21 +2346,125 @@ class PokerServer:
         
         user_id = self.players[conn_id]['user_id']
         amount = message.get('amount', 0)
-        transaction_id = message.get('transaction_id')
-        paypal_details = message.get('paypal_details', {})
         
-        result = self.db.process_paypal_deposit(
-            user_id, amount, transaction_id, paypal_details
-        )
+        if amount < 1:
+            await self.send_to(conn_id, {
+                'type': 'wallet_deposit_result',
+                'success': False,
+                'error': 'Importo minimo: €1',
+                'message_id': message.get('message_id')
+            })
+            return
         
-        await self.send_to(conn_id, {
-            'type': 'wallet_deposit_result',
-            **result,
-            'message_id': message.get('message_id')
-        })
+        try:
+            # Create PayPal order
+            result = await paypal_api.create_order(
+                amount=amount,
+                currency="EUR",
+                description=f"PokerTexas Deposit - €{amount:.2f}"
+            )
+            
+            if result.get('success'):
+                # Store pending order in database for later verification
+                self.db.cursor.execute('''
+                    INSERT INTO transactions (user_id, type, amount, method, status, paypal_order_id, details)
+                    VALUES (?, 'deposit', ?, 'paypal', 'pending', ?, ?)
+                ''', (user_id, amount, result['order_id'], json.dumps({'status': 'created'})))
+                self.db.conn.commit()
+                
+                await self.send_to(conn_id, {
+                    'type': 'wallet_deposit_result',
+                    'success': True,
+                    'order_id': result['order_id'],
+                    'approval_url': result['approval_url'],
+                    'amount': amount,
+                    'message_id': message.get('message_id')
+                })
+            else:
+                await self.send_to(conn_id, {
+                    'type': 'wallet_deposit_result',
+                    'success': False,
+                    'error': result.get('error', 'Errore PayPal'),
+                    'message_id': message.get('message_id')
+                })
+        except Exception as e:
+            await self.send_to(conn_id, {
+                'type': 'wallet_deposit_result',
+                'success': False,
+                'error': f'Errore: {str(e)}',
+                'message_id': message.get('message_id')
+            })
+    
+    async def handle_capture_deposit(self, conn_id: str, message: dict):
+        """Captures (completes) a PayPal deposit after user approval - Step 2"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'capture_deposit_result',
+                'success': False,
+                'error': 'Non autenticato',
+                'message_id': message.get('message_id')
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        order_id = message.get('order_id', '')
+        
+        if not order_id:
+            await self.send_to(conn_id, {
+                'type': 'capture_deposit_result',
+                'success': False,
+                'error': 'Order ID mancante',
+                'message_id': message.get('message_id')
+            })
+            return
+        
+        try:
+            # Capture the payment
+            result = await paypal_api.capture_order(order_id)
+            
+            if result.get('success') and result.get('status') == 'COMPLETED':
+                amount = result.get('amount', 0)
+                
+                # Update wallet balance
+                self.db.cursor.execute('''
+                    UPDATE wallets SET balance = balance + ?, today_deposits = today_deposits + ?
+                    WHERE user_id = ?
+                ''', (amount, amount, user_id))
+                
+                # Update transaction status
+                self.db.cursor.execute('''
+                    UPDATE transactions SET status = 'completed', details = ?
+                    WHERE paypal_order_id = ? AND user_id = ?
+                ''', (json.dumps(result), order_id, user_id))
+                self.db.conn.commit()
+                
+                # Get updated wallet
+                wallet = self.db.get_or_create_wallet(user_id)
+                
+                await self.send_to(conn_id, {
+                    'type': 'capture_deposit_result',
+                    'success': True,
+                    'amount': amount,
+                    'new_balance': wallet['balance'],
+                    'message_id': message.get('message_id')
+                })
+            else:
+                await self.send_to(conn_id, {
+                    'type': 'capture_deposit_result',
+                    'success': False,
+                    'error': result.get('error', 'Pagamento non completato'),
+                    'message_id': message.get('message_id')
+                })
+        except Exception as e:
+            await self.send_to(conn_id, {
+                'type': 'capture_deposit_result',
+                'success': False,
+                'error': f'Errore: {str(e)}',
+                'message_id': message.get('message_id')
+            })
     
     async def handle_wallet_withdraw(self, conn_id: str, message: dict):
-        """Processa una richiesta di prelievo"""
+        """Processes a real withdrawal via PayPal Payouts API"""
         if conn_id not in self.players:
             await self.send_to(conn_id, {
                 'type': 'wallet_withdraw_result',
@@ -2179,13 +2478,83 @@ class PokerServer:
         amount = message.get('amount', 0)
         paypal_email = message.get('paypal_email', '')
         
-        result = self.db.request_withdrawal(user_id, amount, paypal_email)
+        if not paypal_email:
+            await self.send_to(conn_id, {
+                'type': 'wallet_withdraw_result',
+                'success': False,
+                'error': 'Email PayPal richiesta',
+                'message_id': message.get('message_id')
+            })
+            return
         
-        await self.send_to(conn_id, {
-            'type': 'wallet_withdraw_result',
-            **result,
-            'message_id': message.get('message_id')
-        })
+        if amount < 5:
+            await self.send_to(conn_id, {
+                'type': 'wallet_withdraw_result',
+                'success': False,
+                'error': 'Importo minimo prelievo: €5',
+                'message_id': message.get('message_id')
+            })
+            return
+        
+        # Check balance
+        wallet = self.db.get_or_create_wallet(user_id)
+        if wallet['balance'] < amount:
+            await self.send_to(conn_id, {
+                'type': 'wallet_withdraw_result',
+                'success': False,
+                'error': 'Saldo insufficiente',
+                'message_id': message.get('message_id')
+            })
+            return
+        
+        try:
+            # Send actual payout via PayPal
+            result = await paypal_api.send_payout(
+                recipient_email=paypal_email,
+                amount=amount,
+                currency="EUR",
+                note=f"PokerTexas Prelievo - €{amount:.2f}"
+            )
+            
+            if result.get('success'):
+                # Deduct from wallet
+                self.db.cursor.execute('''
+                    UPDATE wallets SET balance = balance - ?, today_withdrawals = today_withdrawals + ?
+                    WHERE user_id = ?
+                ''', (amount, amount, user_id))
+                
+                # Record transaction
+                self.db.cursor.execute('''
+                    INSERT INTO transactions (user_id, type, amount, method, status, paypal_email, details)
+                    VALUES (?, 'withdrawal', ?, 'paypal', 'completed', ?, ?)
+                ''', (user_id, -amount, paypal_email, json.dumps(result)))
+                self.db.conn.commit()
+                
+                # Get updated wallet
+                wallet = self.db.get_or_create_wallet(user_id)
+                
+                await self.send_to(conn_id, {
+                    'type': 'wallet_withdraw_result',
+                    'success': True,
+                    'amount': amount,
+                    'new_balance': wallet['balance'],
+                    'payout_id': result.get('payout_batch_id'),
+                    'message_id': message.get('message_id')
+                })
+            else:
+                await self.send_to(conn_id, {
+                    'type': 'wallet_withdraw_result',
+                    'success': False,
+                    'error': result.get('error', 'Errore invio pagamento'),
+                    'message_id': message.get('message_id')
+                })
+        except Exception as e:
+            await self.send_to(conn_id, {
+                'type': 'wallet_withdraw_result',
+                'success': False,
+                'error': f'Errore: {str(e)}',
+                'message_id': message.get('message_id')
+            })
     
     async def handle_get_transactions(self, conn_id: str, message: dict):
         """Ottiene lo storico transazioni"""
