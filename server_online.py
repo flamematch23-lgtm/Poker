@@ -419,6 +419,7 @@ class DatabaseManager:
                 creator_id INTEGER NOT NULL,
                 settings TEXT,
                 status TEXT DEFAULT 'waiting',
+                table_id TEXT,
                 start_time TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (creator_id) REFERENCES users(id)
@@ -639,6 +640,30 @@ class DatabaseManager:
             wallet['today_winloss'] = 0
         
         return wallet
+    
+    def get_wallet_balance(self, user_id: int) -> float:
+        """Ottiene solo il saldo wallet"""
+        wallet = self.get_wallet(user_id)
+        return wallet.get('balance', 0.0)
+    
+    def get_user_level(self, user_id: int) -> dict:
+        """Calcola il livello utente basato su games_played"""
+        stats = self.get_user_stats(user_id)
+        games_played = stats.get('games_played', 0)
+        
+        # Formula livello: ogni 10 partite = 1 livello (max 100)
+        level = min(100, 1 + games_played // 10)
+        
+        # Progressione verso il prossimo livello
+        progress = (games_played % 10) * 10  # 0-100%
+        games_to_next = 10 - (games_played % 10)
+        
+        return {
+            'level': level,
+            'games_played': games_played,
+            'progress': progress,
+            'games_to_next_level': games_to_next
+        }
     
     def update_wallet_balance(self, user_id: int, amount: float, 
                               transaction_type: str, details: dict = None) -> dict:
@@ -969,8 +994,8 @@ class Player:
 
 
 class PokerTable:
-    def __init__(self, table_id: str, name: str, small_blind: int = 10, 
-                 big_blind: int = 20, min_buy_in: int = 200, max_buy_in: int = 2000):
+    def __init__(self, table_id: str, name: str, small_blind: float = 10, 
+                 big_blind: float = 20, min_buy_in: float = 200, max_buy_in: float = 2000):
         self.table_id = table_id
         self.name = name
         self.small_blind = small_blind
@@ -994,6 +1019,9 @@ class PokerTable:
         
         self.hand_number = 0
         self.action_timeout = 30  # secondi per agire
+        self.is_private = False
+        self.private_game_id = None
+        self.private_password = None
     
     def add_player(self, player: Player, seat: int = -1) -> bool:
         """Aggiunge un giocatore al tavolo"""
@@ -1708,10 +1736,12 @@ class PokerServer:
     def _create_default_tables(self):
         """Crea i tavoli predefiniti"""
         default_tables = [
-            ("table_low", "Principianti", 10, 20, 200, 2000),
-            ("table_mid", "Intermedio", 25, 50, 500, 5000),
-            ("table_high", "Esperti", 50, 100, 1000, 10000),
-            ("table_vip", "VIP", 100, 200, 2000, 20000),
+            # Tavoli con centesimi per soldi reali
+            ("table_micro", "Micro Stakes", 0.10, 0.20, 5, 20),
+            ("table_low", "Low Stakes", 0.25, 0.50, 10, 50),
+            ("table_mid", "Medium Stakes", 0.50, 1.00, 25, 100),
+            ("table_high", "High Stakes", 1.00, 2.00, 50, 200),
+            ("table_vip", "VIP Stakes", 2.50, 5.00, 125, 500),
         ]
         
         for tid, name, sb, bb, min_b, max_b in default_tables:
@@ -1786,6 +1816,7 @@ class PokerServer:
             'register': self.handle_register,
             'login': self.handle_login,
             'get_tables': self.handle_get_tables,
+            'get_user_level': self.handle_get_user_level,
             'create_table': self.handle_create_table,
             'join_table': self.handle_join_table,
             'leave_table': self.handle_leave_table,
@@ -1882,10 +1913,14 @@ class PokerServer:
             }
             self.lobby_users.add(conn_id)
             
+            # Ottieni info livello
+            level_info = self.db.get_user_level(user['id'])
+            
             await self.send_to(conn_id, {
                 'type': 'login_result',
                 'success': True,
-                'user': self.players[conn_id]
+                'user': self.players[conn_id],
+                'level_info': level_info
             })
         else:
             await self.send_to(conn_id, {
@@ -1893,6 +1928,25 @@ class PokerServer:
                 'success': False,
                 'error': 'Credenziali non valide'
             })
+    
+    async def handle_get_user_level(self, conn_id: str, message: dict):
+        """Ottiene le info sul livello dell'utente"""
+        if conn_id not in self.players:
+            await self.send_to(conn_id, {
+                'type': 'user_level',
+                'success': False,
+                'error': 'Devi essere loggato'
+            })
+            return
+        
+        user_id = self.players[conn_id]['user_id']
+        level_info = self.db.get_user_level(user_id)
+        
+        await self.send_to(conn_id, {
+            'type': 'user_level',
+            'success': True,
+            **level_info
+        })
     
     async def handle_get_tables(self, conn_id: str, message: dict):
         """Ritorna la lista dei tavoli"""
@@ -2668,7 +2722,7 @@ class PokerServer:
         })
     
     async def handle_create_friend_game(self, conn_id: str, message: dict):
-        """Crea una nuova partita tra amici"""
+        """Crea una nuova partita tra amici con tavolo reale"""
         if conn_id not in self.players:
             await self.send_to(conn_id, {
                 'type': 'friend_game_created',
@@ -2678,6 +2732,7 @@ class PokerServer:
             return
         
         user_id = self.players[conn_id]['user_id']
+        username = self.players[conn_id]['username']
         name = message.get('name', '')
         password = message.get('password', '')
         game_type = message.get('game_type', 'cashgame')
@@ -2690,25 +2745,75 @@ class PokerServer:
             })
             return
         
+        # Estrai settings con supporto per centesimi (float)
+        small_blind = float(message.get('small_blind', 0.25))
+        big_blind = float(message.get('big_blind', 0.50))
+        buy_in = float(message.get('buy_in', 10))
+        max_buy_in = float(message.get('max_buy_in', 100))
+        max_players = int(message.get('max_players', 6))
+        action_timer = int(message.get('action_timer', 90))
+        
         settings = {
-            'buy_in': message.get('buy_in', 10),
-            'max_players': message.get('max_players', 6),
-            'small_blind': message.get('small_blind', 1),
-            'big_blind': message.get('big_blind', 2),
-            'blind_increase_minutes': message.get('blind_increase_minutes', 10),
-            'max_buy_in': message.get('max_buy_in', 100),
-            'action_timer': message.get('action_timer', 30)
+            'buy_in': buy_in,
+            'max_players': max_players,
+            'small_blind': small_blind,
+            'big_blind': big_blind,
+            'blind_increase_minutes': message.get('blind_increase_minutes', 0),
+            'max_buy_in': max_buy_in,
+            'action_timer': action_timer
         }
         
+        # Crea record nel database
         result = self.db.create_private_game(user_id, name, password, game_type, settings)
+        
+        if not result.get('success'):
+            await self.send_to(conn_id, {
+                'type': 'friend_game_created',
+                **result
+            })
+            return
+        
+        game_id = result.get('game_id')
+        table_id = f"private_{game_id}"
+        
+        # Crea il tavolo reale in memoria
+        table = PokerTable(
+            table_id=table_id,
+            name=f"Privato: {name}",
+            small_blind=small_blind,
+            big_blind=big_blind,
+            min_buy_in=buy_in,
+            max_buy_in=max_buy_in
+        )
+        table.action_timeout = action_timer
+        table.is_private = True
+        table.private_game_id = game_id
+        table.private_password = password
+        
+        self.tables[table_id] = table
+        
+        # Aggiorna il record DB con table_id
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('UPDATE private_games SET table_id = ? WHERE game_id = ?', (table_id, game_id))
+            conn.commit()
+        except Exception as e:
+            print(f"Errore aggiornamento table_id: {e}")
         
         await self.send_to(conn_id, {
             'type': 'friend_game_created',
-            **result
+            'success': True,
+            'game_id': game_id,
+            'table_id': table_id,
+            'name': name,
+            'settings': settings
         })
+        
+        print(f"[PRIVATE] Creato tavolo privato {table_id} da {username}")
     
     async def handle_join_friend_game(self, conn_id: str, message: dict):
-        """Unisciti a una partita tra amici"""
+        """Unisciti a una partita tra amici - crea/unisce al tavolo reale"""
         if conn_id not in self.players:
             await self.send_to(conn_id, {
                 'type': 'friend_game_joined',
@@ -2718,8 +2823,12 @@ class PokerServer:
             return
         
         user_id = self.players[conn_id]['user_id']
+        username = self.players[conn_id]['username']
+        wallet_balance = self.db.get_wallet_balance(user_id)
+        
         game_name = message.get('game_name', '')
         password = message.get('password', '')
+        buy_in = float(message.get('buy_in', 0))
         
         if not game_name or not password:
             await self.send_to(conn_id, {
@@ -2729,12 +2838,127 @@ class PokerServer:
             })
             return
         
+        # Verifica credenziali partita nel database
         result = self.db.join_private_game(user_id, game_name, password)
         
-        await self.send_to(conn_id, {
-            'type': 'friend_game_joined',
-            **result
-        })
+        if not result.get('success'):
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                **result
+            })
+            return
+        
+        game_id = result.get('game_id')
+        settings = result.get('settings', {})
+        table_id = f"private_{game_id}"
+        
+        # Trova o crea il tavolo
+        if table_id not in self.tables:
+            # Il tavolo non esiste ancora, crealo
+            small_blind = float(settings.get('small_blind', 0.25))
+            big_blind = float(settings.get('big_blind', 0.50))
+            min_buy = float(settings.get('buy_in', 10))
+            max_buy = float(settings.get('max_buy_in', 100))
+            action_timer = int(settings.get('action_timer', 90))
+            
+            table = PokerTable(
+                table_id=table_id,
+                name=f"Privato: {game_name}",
+                small_blind=small_blind,
+                big_blind=big_blind,
+                min_buy_in=min_buy,
+                max_buy_in=max_buy
+            )
+            table.action_timeout = action_timer
+            table.is_private = True
+            table.private_game_id = game_id
+            
+            self.tables[table_id] = table
+            print(f"[PRIVATE] Creato tavolo {table_id} per join di {username}")
+        
+        table = self.tables[table_id]
+        
+        # Verifica se già al tavolo
+        if conn_id in table.players:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': True,
+                'table_id': table_id,
+                'already_joined': True,
+                'table': table.to_dict(for_player_id=conn_id)
+            })
+            return
+        
+        # Verifica buy-in
+        if buy_in <= 0:
+            buy_in = table.min_buy_in
+        
+        if buy_in < table.min_buy_in or buy_in > table.max_buy_in:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': False,
+                'error': f'Buy-in deve essere tra {table.min_buy_in:.2f} e {table.max_buy_in:.2f}'
+            })
+            return
+        
+        # Verifica fondi (wallet)
+        if wallet_balance < buy_in:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': False,
+                'error': f'Saldo insufficiente. Hai {wallet_balance:.2f}, serve {buy_in:.2f}'
+            })
+            return
+        
+        # Verifica tavolo pieno
+        if len(table.players) >= MAX_PLAYERS_PER_TABLE:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': False,
+                'error': 'Il tavolo e pieno'
+            })
+            return
+        
+        # Crea il giocatore e aggiungilo al tavolo
+        player = Player(
+            id=conn_id,
+            username=username,
+            user_id=user_id,
+            chips=buy_in
+        )
+        
+        if table.add_player(player):
+            # Sottrai dal wallet
+            self.db.update_wallet_balance(user_id, -buy_in, 'table_buy_in', f'Buy-in tavolo privato {game_name}')
+            
+            # Rimuovi dalla lobby
+            self.lobby_users.discard(conn_id)
+            
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': True,
+                'table_id': table_id,
+                'table': table.to_dict(for_player_id=conn_id)
+            })
+            
+            # Notifica altri giocatori
+            await self.broadcast_to_table(table_id, {
+                'type': 'player_joined',
+                'player': player.to_dict(),
+                'table': table.to_dict()
+            }, exclude=conn_id)
+            
+            print(f"[PRIVATE] {username} si e unito al tavolo {table_id} con {buy_in:.2f}")
+            
+            # Se ci sono abbastanza giocatori, inizia la partita
+            if len(table.players) >= MIN_PLAYERS_TO_START and table.state == GameState.WAITING:
+                await self.start_new_hand(table_id)
+        else:
+            await self.send_to(conn_id, {
+                'type': 'friend_game_joined',
+                'success': False,
+                'error': 'Impossibile unirti al tavolo'
+            })
     
     async def handle_check_active_table(self, conn_id: str, message: dict):
         """Controlla se l'utente ha un tavolo attivo da riconnettersi"""
