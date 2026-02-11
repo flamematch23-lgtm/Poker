@@ -11,11 +11,160 @@ import json
 import hashlib
 import os
 import time
+import random
 from datetime import datetime
 import aiohttp
 import aiosqlite
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+# ==========================================
+# POKER ENGINE
+# ==========================================
+
+class Card:
+    SUITS = ['s', 'h', 'd', 'c'] # spades, hearts, diamonds, clubs
+    RANKS = {2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9', 10: 'T', 11: 'J', 12: 'Q', 13: 'K', 14: 'A'}
+    
+    def __init__(self, rank, suit):
+        self.rank = rank
+        self.suit = suit
+        
+    def __repr__(self):
+        return f"{self.RANKS[self.rank]}{self.suit}"
+        
+    def to_dict(self):
+        return {"rank": self.RANKS[self.rank], "suit": self.suit, "value": self.rank}
+
+class Deck:
+    def __init__(self):
+        self.cards = [Card(r, s) for r in range(2, 15) for s in Card.SUITS]
+        self.shuffle()
+        
+    def shuffle(self):
+        random.shuffle(self.cards)
+        
+    def deal(self, n=1):
+        return [self.cards.pop() for _ in range(n)]
+
+class HandEvaluator:
+    @staticmethod
+    def evaluate(hole_cards, community_cards):
+        # Basic implementation - returns (score, description)
+        # Score is a tuple/number for comparison
+        cards = hole_cards + community_cards
+        if not cards:
+            return (0, "No Hand")
+            
+        # Sort by rank desc
+        cards.sort(key=lambda c: c.rank, reverse=True)
+        
+        # Check Flush
+        suits = {}
+        for c in cards:
+            suits[c.suit] = suits.get(c.suit, []) + [c]
+        
+        flush_suit = None
+        flush_cards = []
+        for s, suit_cards in suits.items():
+            if len(suit_cards) >= 5:
+                flush_suit = s
+                flush_cards = suit_cards[:5]
+                break
+                
+        # Check Straight
+        unique_ranks = sorted(list(set(c.rank for c in cards)), reverse=True)
+        straight_ranks = []
+        for i in range(len(unique_ranks) - 4):
+            window = unique_ranks[i:i+5]
+            if window[0] - window[4] == 4:
+                straight_ranks = window
+                break
+        # Wheel straight (A, 2, 3, 4, 5)
+        if not straight_ranks and 14 in unique_ranks and 2 in unique_ranks and 3 in unique_ranks and 4 in unique_ranks and 5 in unique_ranks:
+            straight_ranks = [5, 4, 3, 2, 14] # Treated as 5-high straight
+            
+        # Check Straight Flush
+        if flush_suit and straight_ranks:
+            # Need to verify if the straight cards are in the flush suit
+            sf_cards = [c for c in cards if c.suit == flush_suit]
+            sf_ranks = sorted([c.rank for c in sf_cards], reverse=True)
+            for i in range(len(sf_ranks) - 4):
+                window = sf_ranks[i:i+5]
+                if window[0] - window[4] == 4:
+                    return (8000000 + window[0], "Straight Flush")
+        
+        # Count ranks
+        rank_counts = {}
+        for c in cards:
+            rank_counts[c.rank] = rank_counts.get(c.rank, 0) + 1
+            
+        pairs = []
+        three_kind = []
+        four_kind = []
+        
+        for r, count in rank_counts.items():
+            if count == 4: four_kind.append(r)
+            elif count == 3: three_kind.append(r)
+            elif count == 2: pairs.append(r)
+            
+        four_kind.sort(reverse=True)
+        three_kind.sort(reverse=True)
+        pairs.sort(reverse=True)
+        
+        # 1. Royal Flush
+        if flush_suit and straight_ranks and straight_ranks[0] == 14:
+            return (9000000, "Royal Flush")
+            
+        # 2. Straight Flush (Handled above)
+        
+        # 3. Four of a Kind
+        if four_kind:
+            kicker = max([r for r in unique_ranks if r != four_kind[0]])
+            return (7000000 + four_kind[0] * 100 + kicker, "Four of a Kind")
+            
+        # 4. Full House
+        if three_kind and (len(three_kind) >= 2 or pairs):
+            t = three_kind[0]
+            p = three_kind[1] if len(three_kind) >= 2 else pairs[0]
+            return (6000000 + t * 100 + p, "Full House")
+            
+        # 5. Flush
+        if flush_suit:
+            score = 5000000
+            for i, c in enumerate(flush_cards):
+                score += c.rank * (100 ** (4-i))
+            return (score, "Flush")
+            
+        # 6. Straight
+        if straight_ranks:
+            return (4000000 + straight_ranks[0], "Straight")
+            
+        # 7. Three of a Kind
+        if three_kind:
+            kickers = sorted([r for r in unique_ranks if r != three_kind[0]], reverse=True)[:2]
+            return (3000000 + three_kind[0] * 10000 + kickers[0] * 100 + kickers[1], "Three of a Kind")
+            
+        # 8. Two Pair
+        if len(pairs) >= 2:
+            p1 = pairs[0]
+            p2 = pairs[1]
+            kicker = max([r for r in unique_ranks if r != p1 and r != p2])
+            return (2000000 + p1 * 10000 + p2 * 100 + kicker, "Two Pair")
+            
+        # 9. One Pair
+        if pairs:
+            kickers = sorted([r for r in unique_ranks if r != pairs[0]], reverse=True)[:3]
+            score = 1000000 + pairs[0] * 1000000
+            for i, k in enumerate(kickers):
+                score += k * (100 ** (2-i))
+            return (score, "Pair")
+            
+        # 10. High Card
+        score = 0
+        for i, c in enumerate(cards[:5]):
+            score += c.rank * (100 ** (4-i))
+        return (score, "High Card")
 
 # PayPal Configuration
 PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', 'ATGUiTFJ0G6kKrJ4RYJ0sg80pZ3qlTqK8WFkIieVu2fU0X354vLFsyel8QVKleajel1ZpgslVsliuVAI')
@@ -157,10 +306,10 @@ class PokerTable:
         self.min_buy_in = min_buy_in
         self.max_buy_in = max_buy_in
         self.max_players = max_players
-        self.players = {}  # user_id -> {username, chips, position, is_active, is_sitting_out}
+        self.players = {}  # user_id -> {username, chips, position, is_active, is_sitting_out, ...}
         self.spectators = set()
         self.dealer_position = 0
-        self.current_player = None
+        self.current_player = None # user_id
         self.pot = 0.0
         self.community_cards = []
         self.game_phase = "waiting"  # waiting, preflop, flop, turn, river, showdown
@@ -168,7 +317,15 @@ class PokerTable:
         self.last_action_time = None
         self.is_private = False
         self.password = None
-    
+        
+        # Game State
+        self.deck = Deck()
+        self.winners = []
+        self.hand_result = ""
+        self.round_bets = {} # user_id -> amount bet in current street
+        self.active_seat_order = [] # list of user_ids in seat order for current hand
+        self.players_acted = set() # user_ids who acted in current round
+
     def add_player(self, user_id: int, username: str, chips: float, position: int = None):
         if len(self.players) >= self.max_players:
             return False, "Table is full"
@@ -188,20 +345,305 @@ class PokerTable:
             'is_active': True,
             'is_sitting_out': False,
             'cards': [],
-            'current_bet': 0.0
+            'current_bet': 0.0,
+            'folded': False,
+            'all_in': False
         }
+        
+        # Try to start game if enough players
+        if self.game_phase == "waiting" and len(self.players) >= 2:
+            self.start_hand()
+            
         return True, position
     
     def remove_player(self, user_id: int):
         if user_id in self.players:
             chips = self.players[user_id]['chips']
             del self.players[user_id]
+            
+            # If game in progress, handle fold
+            if self.game_phase != "waiting" and self.current_player == user_id:
+                self.handle_action(user_id, "fold")
+            
+            # Check if game should end
+            active_players = [p for p in self.players.values() if not p['is_sitting_out']]
+            if len(active_players) < 2:
+                self.game_phase = "waiting"
+                self.pot = 0
+                self.community_cards = []
+                
             return chips
         return 0
+
+    def start_hand(self):
+        active_players = [uid for uid, p in self.players.items() if not p['is_sitting_out'] and p['chips'] > 0]
+        if len(active_players) < 2:
+            self.game_phase = "waiting"
+            return
+
+        # Sort by position
+        active_players.sort(key=lambda uid: self.players[uid]['position'])
+        self.active_seat_order = active_players
+        
+        # Move Dealer Button
+        # Find next dealer index
+        current_dealer_idx = -1
+        for i, uid in enumerate(self.active_seat_order):
+            if self.players[uid]['position'] >= self.dealer_position: # Simple logic, can be improved
+                current_dealer_idx = i
+                break
+        
+        dealer_idx = (current_dealer_idx + 1) % len(self.active_seat_order)
+        self.dealer_position = self.players[self.active_seat_order[dealer_idx]]['position']
+        
+        # Reset State
+        self.game_phase = "preflop"
+        self.pot = 0.0
+        self.community_cards = []
+        self.deck = Deck()
+        self.winners = []
+        self.hand_result = ""
+        self.round_bets = {uid: 0.0 for uid in active_players}
+        self.players_acted = set()
+        
+        for uid in active_players:
+            self.players[uid]['cards'] = self.deck.deal(2)
+            self.players[uid]['current_bet'] = 0.0
+            self.players[uid]['folded'] = False
+            self.players[uid]['all_in'] = False
+            
+        # Post Blinds
+        sb_idx = (dealer_idx + 1) % len(active_players)
+        bb_idx = (dealer_idx + 2) % len(active_players)
+        
+        # Heads up exception (Dealer is SB)
+        if len(active_players) == 2:
+            sb_idx = dealer_idx
+            bb_idx = (dealer_idx + 1) % 2
+
+        sb_user = active_players[sb_idx]
+        bb_user = active_players[bb_idx]
+        
+        self._post_blind(sb_user, self.small_blind)
+        self._post_blind(bb_user, self.big_blind)
+        
+        self.current_bet = self.big_blind
+        
+        # First to act
+        next_idx = (bb_idx + 1) % len(active_players)
+        self.current_player = active_players[next_idx]
+        
+    def _post_blind(self, user_id, amount):
+        player = self.players[user_id]
+        bet = min(player['chips'], amount)
+        player['chips'] -= bet
+        player['current_bet'] = bet
+        self.pot += bet
+        self.round_bets[user_id] = bet
+        if player['chips'] == 0:
+            player['all_in'] = True
+
+    def handle_action(self, user_id: int, action: str, amount: float = 0):
+        if self.game_phase == "waiting" or self.game_phase == "showdown":
+            return False, "Game not active"
+            
+        if user_id != self.current_player:
+            return False, "Not your turn"
+            
+        player = self.players[user_id]
+        
+        if action == "fold":
+            player['folded'] = True
+            player['cards'] = []
+            
+        elif action == "call":
+            to_call = self.current_bet - player['current_bet']
+            if to_call > player['chips']:
+                # All in
+                to_call = player['chips']
+                player['all_in'] = True
+            
+            player['chips'] -= to_call
+            player['current_bet'] += to_call
+            self.pot += to_call
+            self.round_bets[user_id] = player['current_bet']
+            
+        elif action == "check":
+            if player['current_bet'] < self.current_bet:
+                return False, "Cannot check, must call"
+                
+        elif action == "raise":
+            if amount < self.current_bet * 2: # Min raise
+                 # Allow all-in raise if less than min raise
+                 if amount != player['chips'] + player['current_bet']:
+                     return False, f"Raise too small. Min: {self.current_bet * 2}"
+            
+            total_bet = amount
+            to_add = total_bet - player['current_bet']
+            
+            if to_add > player['chips']:
+                return False, "Not enough chips"
+                
+            player['chips'] -= to_add
+            player['current_bet'] += to_add
+            self.pot += to_add
+            self.current_bet = total_bet
+            self.round_bets[user_id] = player['current_bet']
+            
+            if player['chips'] == 0:
+                player['all_in'] = True
+
+        # Check if round complete or next player
+        self.players_acted.add(user_id)
+        self._next_turn()
+        return True, "Action accepted"
+
+    def _next_turn(self):
+        # Find next player
+        active_players = [uid for uid in self.active_seat_order if not self.players[uid]['folded'] and not self.players[uid]['all_in']]
+        
+        # Check if only one player left (everyone else folded)
+        non_folded = [uid for uid in self.active_seat_order if not self.players[uid]['folded']]
+        if len(non_folded) == 1:
+            self._end_hand_winner(non_folded[0])
+            return
+
+        # Find index of current player
+        try:
+            curr_idx = self.active_seat_order.index(self.current_player)
+        except:
+            curr_idx = 0
+            
+        # Try finding next active player
+        next_player = None
+        for i in range(1, len(self.active_seat_order)):
+            idx = (curr_idx + i) % len(self.active_seat_order)
+            uid = self.active_seat_order[idx]
+            p = self.players[uid]
+            if not p['folded'] and not p['all_in']:
+                next_player = uid
+                break
+        
+        # Check if round should end
+        all_matched = True
+        for uid in self.active_seat_order:
+            p = self.players[uid]
+            if not p['folded'] and not p['all_in'] and p['current_bet'] != self.current_bet:
+                all_matched = False
+                break
+        
+        # Round ends if all matched AND everyone active has acted
+        # Exception: if only 1 active player (others all-in) -> they don't need to act if matched
+        
+        all_acted = True
+        for uid in active_players:
+            if uid not in self.players_acted:
+                # If they are all-in, they don't need to act (handled by active_players filter)
+                # If they haven't acted, round continues
+                all_acted = False
+                break
+                
+        if all_matched and all_acted:
+             self._next_phase()
+        else:
+            self.current_player = next_player
+
+    def _next_phase(self):
+        # Reset current bets for next street
+        for uid in self.active_seat_order:
+            self.players[uid]['current_bet'] = 0.0
+        self.current_bet = 0.0
+        self.players_acted = set()
+        
+        if self.game_phase == "preflop":
+            self.game_phase = "flop"
+            self.community_cards = self.deck.deal(3)
+        elif self.game_phase == "flop":
+            self.game_phase = "turn"
+            self.community_cards += self.deck.deal(1)
+        elif self.game_phase == "turn":
+            self.game_phase = "river"
+            self.community_cards += self.deck.deal(1)
+        elif self.game_phase == "river":
+            self.game_phase = "showdown"
+            self._evaluate_showdown()
+            return
+
+        # Set first player to act (first active after dealer)
+        dealer_idx = -1
+        for i, uid in enumerate(self.active_seat_order):
+            if self.players[uid]['position'] == self.dealer_position:
+                dealer_idx = i
+                break
+        
+        next_player = None
+        for i in range(1, len(self.active_seat_order) + 1):
+            idx = (dealer_idx + i) % len(self.active_seat_order)
+            uid = self.active_seat_order[idx]
+            p = self.players[uid]
+            if not p['folded'] and not p['all_in']:
+                next_player = uid
+                break
+                
+        if next_player:
+            self.current_player = next_player
+        else:
+            # Everyone all-in? Run it out
+            while len(self.community_cards) < 5:
+                self.community_cards += self.deck.deal(1)
+            self.game_phase = "showdown"
+            self._evaluate_showdown()
+
+    def _end_hand_winner(self, winner_id):
+        # Single winner (everyone else folded)
+        self.players[winner_id]['chips'] += self.pot
+        self.winners = [{"user_id": winner_id, "amount": self.pot, "hand": "Opponents Folded"}]
+        self.game_phase = "showdown"
+        # Reset timer would go here
+        
+    def _evaluate_showdown(self):
+        # Evaluate all hands
+        results = []
+        for uid in self.active_seat_order:
+            p = self.players[uid]
+            if not p['folded']:
+                score, desc = HandEvaluator.evaluate(p['cards'], self.community_cards)
+                results.append({"user_id": uid, "score": score, "desc": desc})
+        
+        # Sort by score desc
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        if not results:
+            return
+
+        # Find winners (handle splits)
+        best_score = results[0]['score']
+        winners = [r for r in results if r['score'] == best_score]
+        
+        # Split pot
+        split_amount = self.pot / len(winners)
+        for w in winners:
+            self.players[w['user_id']]['chips'] += split_amount
+            w['amount'] = split_amount
+            w['hand'] = w['desc']
+            
+        self.winners = winners
+        self.hand_result = ", ".join([f"{w['desc']}" for w in winners])
     
     def get_state(self, for_user_id: int = None):
         players_state = []
         for uid, p in self.players.items():
+            cards = []
+            # Show cards if:
+            # 1. It's the user themselves
+            # 2. It's showdown and player didn't fold
+            if for_user_id == uid or (self.game_phase == "showdown" and not p['folded']):
+                cards = [c.to_dict() for c in p['cards']]
+            elif p['folded']:
+                 cards = [] # Folded cards hidden
+            else:
+                 cards = [{"rank": "?", "suit": "?", "value": 0}, {"rank": "?", "suit": "?", "value": 0}] if p['cards'] else []
+
             player_state = {
                 'user_id': uid,
                 'username': p['username'],
@@ -210,11 +652,11 @@ class PokerTable:
                 'is_active': p['is_active'],
                 'is_sitting_out': p['is_sitting_out'],
                 'current_bet': p['current_bet'],
-                'has_cards': len(p['cards']) > 0
+                'has_cards': len(p['cards']) > 0,
+                'cards': cards,
+                'folded': p['folded'],
+                'all_in': p['all_in']
             }
-            # Only show cards to the player themselves
-            if for_user_id == uid:
-                player_state['cards'] = p['cards']
             players_state.append(player_state)
         
         return {
@@ -229,9 +671,10 @@ class PokerTable:
             'dealer_position': self.dealer_position,
             'current_player': self.current_player,
             'pot': self.pot,
-            'community_cards': self.community_cards,
+            'community_cards': [c.to_dict() for c in self.community_cards],
             'game_phase': self.game_phase,
-            'current_bet': self.current_bet
+            'current_bet': self.current_bet,
+            'winners': self.winners
         }
 
 class PokerServer:
@@ -1376,6 +1819,46 @@ class PokerServer:
                 "message": "Avatar aggiornato!"
             }
 
+    async def handle_game_action(self, ws, data: dict):
+        user_id = self.connections.get(ws)
+        if not user_id:
+            return {"type": "error", "error": "Non autenticato"}
+        
+        table_id = self.user_tables.get(user_id)
+        if not table_id or table_id not in self.tables:
+            return {"type": "error", "error": "Non sei a un tavolo"}
+        
+        table = self.tables[table_id]
+        action = data.get('action') # check, call, raise, fold
+        amount = float(data.get('amount', 0))
+        
+        success, message = table.handle_action(user_id, action, amount)
+        
+        if success:
+            # Broadcast update
+            await self.broadcast_table_state(table_id)
+            
+            # If game ended (showdown), wait and restart
+            if table.game_phase == "showdown":
+                # Notify winners
+                await self.broadcast_table_state(table_id)
+                # Wait 5 seconds then restart (async sleep in background task would be better but blocking here for simplicity is risky)
+                # We should trigger a delayed restart. 
+                # For now, let's just leave it at showdown. 
+                # Ideally: asyncio.create_task(self.restart_hand(table_id))
+                asyncio.create_task(self.restart_hand(table_id))
+                
+            return {"type": "action_result", "success": True}
+        else:
+            return {"type": "action_result", "success": False, "error": message}
+
+    async def restart_hand(self, table_id):
+        await asyncio.sleep(8) # Wait 8 seconds to show results
+        if table_id in self.tables:
+            table = self.tables[table_id]
+            table.start_hand()
+            await self.broadcast_table_state(table_id)
+
     async def handle_message(self, ws, message: str):
         try:
             data = json.loads(message)
@@ -1414,6 +1897,10 @@ class PokerServer:
                 'chat_message': self.handle_chat_message,
                 'get_leaderboard': self.handle_get_leaderboard,
                 'update_avatar': self.handle_update_avatar,
+                'check': self.handle_game_action,
+                'call': self.handle_game_action,
+                'raise': self.handle_game_action,
+                'fold': self.handle_game_action,
             }
             
             handler = handlers.get(action)
