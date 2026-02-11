@@ -269,6 +269,7 @@ class PokerServer:
                     security_answer TEXT NOT NULL,
                     chips INTEGER DEFAULT 10000,
                     level INTEGER DEFAULT 1,
+                    avatar_id INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_login TIMESTAMP
                 )
@@ -437,7 +438,7 @@ class PokerServer:
     async def handle_ping(self, ws, data: dict):
         return {"type": "pong"}
 
-async def handle_login(self, ws, data: dict):
+    async def handle_login(self, ws, data: dict):
         email = data.get('email', '').strip().lower()
         password = data.get('password', '')
         
@@ -657,11 +658,11 @@ async def handle_login(self, ws, data: dict):
     async def handle_verify_deposit(self, ws, data: dict):
         user_id = self.connections.get(ws)
         if not user_id:
-            return {"type": "verify_wallet_deposit_result", "success": False, "error": "Non autenticato"}
+            return {"type": "capture_deposit_result", "success": False, "error": "Non autenticato"}
         
         order_id = data.get('order_id')
         if not order_id:
-            return {"type": "verify_wallet_deposit_result", "success": False, "error": "Order ID mancante"}
+            return {"type": "capture_deposit_result", "success": False, "error": "Order ID mancante"}
         
         try:
             # Check order status
@@ -709,7 +710,7 @@ async def handle_login(self, ws, data: dict):
                         wallet = await cursor.fetchone()
                         
                         return {
-                            "type": "verify_wallet_deposit_result",
+                            "type": "capture_deposit_result",
                             "success": True,
                             "amount": amount,
                             "new_balance": wallet[0] if wallet else amount,
@@ -717,13 +718,13 @@ async def handle_login(self, ws, data: dict):
                         }
             
             return {
-                "type": "verify_wallet_deposit_result",
+                "type": "capture_deposit_result",
                 "success": False,
                 "status": status,
                 "error": "Pagamento non completato"
             }
         except Exception as e:
-            return {"type": "verify_wallet_deposit_result", "success": False, "error": str(e)}
+            return {"type": "capture_deposit_result", "success": False, "error": str(e)}
     
     async def handle_withdraw(self, ws, data: dict):
         user_id = self.connections.get(ws)
@@ -1000,9 +1001,13 @@ async def handle_login(self, ws, data: dict):
     async def handle_create_private_game(self, ws, data: dict):
         user_id = self.connections.get(ws)
         if not user_id:
-            return {"type": "create_private_response", "success": False, "error": "Non autenticato"}
+            return {"type": "friend_game_created", "success": False, "error": "Non autenticato"}
         
         game_name = data.get('game_name', '').strip()
+        # Fallback for client using 'name' instead of 'game_name'
+        if not game_name:
+            game_name = data.get('name', '').strip()
+            
         password = data.get('password', '').strip()
         small_blind = float(data.get('small_blind', 0.10))
         big_blind = float(data.get('big_blind', 0.20))
@@ -1011,9 +1016,9 @@ async def handle_login(self, ws, data: dict):
         max_players = int(data.get('max_players', 6))
         
         if not game_name or len(game_name) < 3:
-            return {"type": "create_private_response", "success": False, "error": "Nome partita deve avere almeno 3 caratteri"}
+            return {"type": "friend_game_created", "success": False, "error": "Nome partita deve avere almeno 3 caratteri"}
         if not password or len(password) < 4:
-            return {"type": "create_private_response", "success": False, "error": "Password deve avere almeno 4 caratteri"}
+            return {"type": "friend_game_created", "success": False, "error": "Password deve avere almeno 4 caratteri"}
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
@@ -1032,7 +1037,7 @@ async def handle_login(self, ws, data: dict):
             self.tables[table_id] = table
             
             return {
-                "type": "create_private_response",
+                "type": "friend_game_created",
                 "success": True,
                 "game_id": game_id,
                 "table_id": table_id,
@@ -1043,7 +1048,7 @@ async def handle_login(self, ws, data: dict):
     async def handle_join_private_game(self, ws, data: dict):
         user_id = self.connections.get(ws)
         if not user_id:
-            return {"type": "join_private_response", "success": False, "error": "Non autenticato"}
+            return {"type": "friend_game_joined", "success": False, "error": "Non autenticato"}
         
         game_name = data.get('game_name', '').strip()
         password = data.get('password', '').strip()
@@ -1058,7 +1063,7 @@ async def handle_login(self, ws, data: dict):
             game = await cursor.fetchone()
             
             if not game:
-                return {"type": "join_private_response", "success": False, "error": "Nome o password non corretti"}
+                return {"type": "friend_game_joined", "success": False, "error": "Nome o password non corretti"}
             
             table_id = f"private_{game['id']}"
             
@@ -1077,7 +1082,7 @@ async def handle_login(self, ws, data: dict):
             table = self.tables[table_id]
             
             if buy_in < table.min_buy_in or buy_in > table.max_buy_in:
-                return {"type": "join_private_response", "success": False,
+                return {"type": "friend_game_joined", "success": False,
                         "error": f"Buy-in deve essere tra €{table.min_buy_in:.2f} e €{table.max_buy_in:.2f}"}
             
             # Check wallet
@@ -1085,7 +1090,7 @@ async def handle_login(self, ws, data: dict):
             wallet = await cursor.fetchone()
             
             if not wallet or wallet['balance'] < buy_in:
-                return {"type": "join_private_response", "success": False, "error": "Saldo insufficiente"}
+                return {"type": "friend_game_joined", "success": False, "error": "Saldo insufficiente"}
             
             cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
             user = await cursor.fetchone()
@@ -1120,7 +1125,7 @@ async def handle_login(self, ws, data: dict):
                 # Refund
                 await db.execute("UPDATE wallets SET balance = balance + ? WHERE user_id = ?", (buy_in, user_id))
                 await db.commit()
-                return {"type": "join_private_response", "success": False, "error": result}
+                return {"type": "friend_game_joined", "success": False, "error": result}
     
     async def handle_leave_table(self, ws, data: dict):
         user_id = self.connections.get(ws)
@@ -1344,15 +1349,18 @@ async def handle_login(self, ws, data: dict):
             
             handlers = {
                 'ping': self.handle_ping,
-            'register': self.handle_register,
+                'register': self.handle_register,
                 'login': self.handle_login,
                 'get_security_question': self.handle_get_security_question,
                 'verify_security_answer': self.handle_verify_security_answer,
                 'reset_password': self.handle_reset_password,
                 'get_wallet': self.handle_get_wallet,
                 'create_deposit': self.handle_create_deposit,
+                'wallet_deposit': self.handle_create_deposit, # Alias for client
                 'verify_deposit': self.handle_verify_deposit,
+                'capture_deposit': self.handle_verify_deposit, # Alias for client
                 'withdraw': self.handle_withdraw,
+                'wallet_withdraw': self.handle_withdraw, # Alias for client
                 'get_statistics': self.handle_get_statistics,
                 'search_users': self.handle_search_users,
                 'send_friend_request': self.handle_send_friend_request,
@@ -1361,7 +1369,9 @@ async def handle_login(self, ws, data: dict):
                 'get_cash_tables': self.handle_get_cash_tables,
                 'join_cash_table': self.handle_join_cash_table,
                 'create_private_game': self.handle_create_private_game,
+                'create_friend_game': self.handle_create_private_game, # Alias for client
                 'join_private_game': self.handle_join_private_game,
+                'join_friend_game': self.handle_join_private_game, # Alias for client
                 'leave_table': self.handle_leave_table,
                 'get_table_state': self.handle_get_table_state,
                 'get_game_history': self.handle_get_game_history,
