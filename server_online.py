@@ -448,7 +448,7 @@ class PokerServer:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT id, username, chips, level FROM users WHERE email = ? AND password_hash = ?",
+                "SELECT id, username, chips, level, avatar_id FROM users WHERE email = ? AND password_hash = ?",
                 (email, self.hash_password(password))
             )
             user = await cursor.fetchone()
@@ -484,6 +484,7 @@ class PokerServer:
                 "username": user['username'],
                 "chips": user['chips'],
                 "level": level,
+                "avatar_id": user['avatar_id'] if 'avatar_id' in user.keys() else 0,
                 "wallet_balance": balance,
                 "message": "Login effettuato!"
             }
@@ -856,6 +857,19 @@ class PokerServer:
                 (user_id, friend_id)
             )
             await db.commit()
+            
+            # Notify friend if connected
+            if friend_id in self.user_connections:
+                friend_ws = self.user_connections[friend_id]
+                try:
+                    await friend_ws.send(json.dumps({
+                        "type": "notification",
+                        "title": "Nuova richiesta di amicizia",
+                        "message": "Hai ricevuto una richiesta di amicizia!",
+                        "notification_type": "friend_request"
+                    }))
+                except:
+                    pass
             
             return {"type": "friend_request_response", "success": True, "message": "Richiesta inviata!"}
     
@@ -1342,6 +1356,26 @@ class PokerServer:
                 "leaderboard_type": leaderboard_type
             }
 
+    async def handle_update_avatar(self, ws, data: dict):
+        user_id = self.connections.get(ws)
+        if not user_id:
+            return {"type": "avatar_update_result", "success": False, "error": "Non autenticato"}
+        
+        avatar_id = data.get('avatar_id')
+        if not isinstance(avatar_id, int) or avatar_id < 0 or avatar_id > 20: # Assuming max 20 avatars
+            return {"type": "avatar_update_result", "success": False, "error": "Avatar non valido"}
+            
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("UPDATE users SET avatar_id = ? WHERE id = ?", (avatar_id, user_id))
+            await db.commit()
+            
+            return {
+                "type": "avatar_update_result",
+                "success": True,
+                "avatar_id": avatar_id,
+                "message": "Avatar aggiornato!"
+            }
+
     async def handle_message(self, ws, message: str):
         try:
             data = json.loads(message)
@@ -1379,6 +1413,7 @@ class PokerServer:
                 'get_friend_games': self.handle_get_friend_games,
                 'chat_message': self.handle_chat_message,
                 'get_leaderboard': self.handle_get_leaderboard,
+                'update_avatar': self.handle_update_avatar,
             }
             
             handler = handlers.get(action)
