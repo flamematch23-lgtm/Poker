@@ -2569,6 +2569,16 @@ class PokerServer:
 
     # --- NEW ADMIN ROUTES ---
 
+    async def handle_get_version(self, request):
+        """Return the latest app version info"""
+        return web.json_response({
+            "latest_version_code": 2,
+            "latest_version_name": "1.1",
+            "apk_url": f"http://{request.host}/download/app-release.apk",
+            "force_update": False,
+            "release_notes": "Aggiunto Google Pay e correzione bug login."
+        })
+
     async def admin_get_pending_withdrawals(self, request):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -2709,6 +2719,7 @@ class PokerServer:
         
         await self.init_db()
         print(f"Poker Server v14 starting on {host}:{port}")
+        print(f"Database file: {os.path.abspath(self.db_path)}")
         print(f"Password recovery: ENABLED")
         print(f"PayPal: {'Configured' if PAYPAL_CLIENT_ID else 'Not configured'}")
         
@@ -2768,6 +2779,19 @@ class PokerServer:
 
         resource_update_table = cors.add(app.router.add_resource("/api/admin/tables/{id}/update"))
         cors.add(resource_update_table.add_route("POST", self.admin_update_table))
+
+        # Version Check
+        resource_version = cors.add(app.router.add_resource("/api/version"))
+        cors.add(resource_version.add_route("GET", self.handle_get_version))
+        
+        # APK Download (Static)
+        try:
+            static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+            if not os.path.exists(static_path):
+                os.makedirs(static_path)
+            app.router.add_static('/download', path=static_path, name='static')
+        except Exception as e:
+            print(f"Warning: Could not setup static download path: {e}")
 
         # NEW ROUTES
         resource_pending_withdrawals = cors.add(app.router.add_resource("/api/admin/withdrawals/pending"))
