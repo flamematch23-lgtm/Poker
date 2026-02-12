@@ -1223,13 +1223,15 @@ class PokerServer:
             return {"type": "wallet_deposit_result", "success": False, "error": "Non autenticato"}
         
         amount = data.get('amount', 0)
+        method = data.get('payment_method', 'paypal')
+
         if amount < 1:
             return {"type": "wallet_deposit_result", "success": False, "error": "Importo minimo: €1"}
         if amount > 1000:
             return {"type": "wallet_deposit_result", "success": False, "error": "Importo massimo: €1000"}
         
         try:
-            order = await self.paypal.create_order(amount)
+            order = await self.paypal.create_order(amount, description=f"Deposit via {method.upper()}")
             order_id = order['id']
             
             # Find approval URL
@@ -1243,8 +1245,8 @@ class PokerServer:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     """INSERT INTO transactions (user_id, type, amount, status, paypal_order_id, description)
-                       VALUES (?, 'deposit', ?, 'pending', ?, 'PayPal Deposit')""",
-                    (user_id, amount, order_id)
+                       VALUES (?, 'deposit', ?, 'pending', ?, ?)""",
+                    (user_id, amount, order_id, f"Deposit via {method.upper()}")
                 )
                 await db.commit()
             
@@ -1253,7 +1255,8 @@ class PokerServer:
                 "success": True,
                 "order_id": order_id,
                 "approval_url": approval_url,
-                "amount": amount
+                "amount": amount,
+                "payment_method": method
             }
         except Exception as e:
             return {"type": "wallet_deposit_result", "success": False, "error": str(e)}
