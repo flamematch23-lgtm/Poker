@@ -169,7 +169,8 @@ class HandEvaluator:
 # PayPal Configuration
 PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', 'ATGUiTFJ0G6kKrJ4RYJ0sg80pZ3qlTqK8WFkIieVu2fU0X354vLFsyel8QVKleajel1ZpgslVsliuVAI')
 PAYPAL_SECRET = os.environ.get('PAYPAL_SECRET', 'EPsoCGBkuF3LI8KQKbTWBDhjw6f4gc2RUscrAw9W3baDJlU-0ZyKnuU6qVmAnGbzmn12AcMNcbRRYGgB')
-PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com"
+# PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com" # SANDBOX
+PAYPAL_API_BASE = "https://api-m.paypal.com" # LIVE
 
 # Security Questions (5 options)
 SECURITY_QUESTIONS = [
@@ -221,8 +222,8 @@ class PayPalClient:
                 "brand_name": "PokerTexas",
                 "landing_page": "NO_PREFERENCE",
                 "user_action": "PAY_NOW",
-                "return_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel"
+                "return_url": "pokertexas://paypal/return",
+                "cancel_url": "pokertexas://paypal/cancel"
             }
         }
         
