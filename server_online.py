@@ -15,7 +15,7 @@ import time
 import random
 from datetime import datetime, timedelta
 import aiohttp
-from aiohttp import web
+from aiohttp import web, WSMsgType
 import aiosqlite
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -50,6 +50,21 @@ load_config()
 # ==========================================
 # POKER ENGINE
 # ==========================================
+
+class WebSocketAdapter:
+    def __init__(self, ws, request):
+        self._ws = ws
+        self._request = request
+        
+    async def send(self, data):
+        await self._ws.send_str(data)
+        
+    async def close(self):
+        await self._ws.close()
+        
+    @property
+    def remote_address(self):
+        return self._request.remote
 
 class Card:
     SUITS = ['s', 'h', 'd', 'c'] # spades, hearts, diamonds, clubs
@@ -2148,23 +2163,31 @@ class PokerServer:
             print(f"Error handling message: {e}")
             await ws.send(json.dumps({"type": "error", "error": str(e)}))
     
-    async def handle_connection(self, ws):
-        print(f"New connection from {ws.remote_address}")
-        # Send connected acknowledgment immediately
+    async def handle_websocket_request(self, request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        adapter = WebSocketAdapter(ws, request)
+        print(f"New connection from {adapter.remote_address}")
+        
         try:
-            await ws.send(json.dumps({"type": "connected", "status": "ok"}))
-            print(f"Sent connected ack to {ws.remote_address}")
+            await adapter.send(json.dumps({"type": "connected", "status": "ok"}))
+            print(f"Sent connected ack to {adapter.remote_address}")
         except Exception as e:
             print(f"Failed to send connected ack: {e}")
-            return
+            return ws
+
         try:
-            async for message in ws:
-                await self.handle_message(ws, message)
-        except ConnectionClosed:
-            pass
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    await self.handle_message(adapter, msg.data)
+                elif msg.type == WSMsgType.ERROR:
+                    print('ws connection closed with exception %s', ws.exception())
+        except Exception as e:
+            print(f"WS Exception: {e}")
         finally:
             # Cleanup
-            user_id = self.connections.pop(ws, None)
+            user_id = self.connections.pop(adapter, None)
             if user_id:
                 self.user_connections.pop(user_id, None)
                 # Handle leaving table on disconnect
@@ -2184,13 +2207,13 @@ class PokerServer:
                             self._start_turn_timer(table_id)
                             
                         # Broadcast update
-                        # We need to run this async, but we are in finally block of an async function
-                        # so we can await
                         try:
                             await self.broadcast_table_state(table_id)
                         except:
                             pass
-            print(f"Connection closed: {ws.remote_address}")
+            print(f"Connection closed: {adapter.remote_address}")
+            
+        return ws
     
     async def admin_serve_dashboard(self, request):
         try:
@@ -2572,11 +2595,11 @@ class PokerServer:
     async def handle_get_version(self, request):
         """Return the latest app version info"""
         return web.json_response({
-            "latest_version_code": 2,
-            "latest_version_name": "1.1",
-            "apk_url": f"http://{request.host}/download/app-release.apk",
+            "latest_version_code": 3,
+            "latest_version_name": "1.2",
+            "apk_url": f"https://{request.host}/download/app-release.apk",
             "force_update": False,
-            "release_notes": "Aggiunto Google Pay e correzione bug login."
+            "release_notes": "Aggiunto Auto-Update e correzioni varie."
         })
 
     async def admin_get_pending_withdrawals(self, request):
@@ -2715,7 +2738,6 @@ class PokerServer:
 
     async def run(self, host: str = "0.0.0.0", port: int = None):
         port = port or int(os.environ.get("PORT", 8765))
-        admin_port = 8766
         
         await self.init_db()
         print(f"Poker Server v14 starting on {host}:{port}")
@@ -2723,7 +2745,6 @@ class PokerServer:
         print(f"Password recovery: ENABLED")
         print(f"PayPal: {'Configured' if PAYPAL_CLIENT_ID else 'Not configured'}")
         
-        # Start Admin Server
         app = web.Application()
         # CORS
         import aiohttp_cors
@@ -2735,8 +2756,13 @@ class PokerServer:
             )
         })
         
-        # Routes
-        app.router.add_get('/', self.admin_serve_dashboard)
+        # WebSocket Routes
+        app.router.add_get('/', self.handle_websocket_request)
+        app.router.add_get('/ws', self.handle_websocket_request)
+        
+        # Admin Routes
+        app.router.add_get('/admin', self.admin_serve_dashboard)
+        app.router.add_get('/dashboard', self.admin_serve_dashboard)
         
         # API Routes with CORS
         # Existing
@@ -2815,12 +2841,11 @@ class PokerServer:
         
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, host, admin_port)
+        site = web.TCPSite(runner, host, port)
         await site.start()
-        print(f"Admin Panel running on http://{host}:{admin_port}")
+        print(f"Poker Server v14 running on http://{host}:{port}")
 
-        async with websockets.serve(self.handle_connection, host, port):
-            await asyncio.Future()
+        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
