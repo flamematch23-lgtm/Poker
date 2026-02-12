@@ -2176,7 +2176,7 @@ class PokerServer:
             await ws.send(json.dumps({"type": "error", "error": str(e)}))
     
     async def handle_websocket_request(self, request):
-        ws = web.WebSocketResponse()
+        ws = web.WebSocketResponse(heartbeat=30.0) # Enable heartbeat
         await ws.prepare(request)
         
         adapter = WebSocketAdapter(ws, request)
@@ -2190,11 +2190,18 @@ class PokerServer:
             return ws
 
         try:
+            # Set ping/pong timeout to prevent ghost connections
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     await self.handle_message(adapter, msg.data)
                 elif msg.type == WSMsgType.ERROR:
                     print('ws connection closed with exception %s', ws.exception())
+                elif msg.type == WSMsgType.PING:
+                    await ws.pong()
+        except asyncio.CancelledError:
+            pass # Server shutdown
+        except ConnectionResetError:
+            pass # Client disconnected abruptly
         except Exception as e:
             print(f"WS Exception: {e}")
         finally:
