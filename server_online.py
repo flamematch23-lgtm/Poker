@@ -1226,6 +1226,43 @@ class PokerServer:
         except Exception as e:
             return {"type": "capture_deposit_result", "success": False, "error": str(e)}
     
+    async def handle_cancel_deposit(self, ws, data: dict):
+        user_id = self.connections.get(ws)
+        if not user_id:
+            return {"type": "cancel_deposit_result", "success": False, "error": "Non autenticato"}
+        
+        order_id = data.get('order_id')
+        if not order_id:
+            return {"type": "cancel_deposit_result", "success": False, "error": "Order ID mancante"}
+            
+        async with aiosqlite.connect(self.db_path) as db:
+            # Check if transaction exists and is pending
+            cursor = await db.execute(
+                "SELECT id FROM transactions WHERE paypal_order_id = ? AND user_id = ? AND status = 'pending'",
+                (order_id, user_id)
+            )
+            tx = await cursor.fetchone()
+            
+            if tx:
+                # Update transaction status
+                await db.execute(
+                    "UPDATE transactions SET status = 'cancelled' WHERE paypal_order_id = ?",
+                    (order_id,)
+                )
+                await db.commit()
+                
+                return {
+                    "type": "cancel_deposit_result",
+                    "success": True,
+                    "message": "Deposito annullato"
+                }
+            else:
+                return {
+                    "type": "cancel_deposit_result",
+                    "success": False,
+                    "error": "Transazione non trovata o già processata"
+                }
+
     async def handle_withdraw(self, ws, data: dict):
         user_id = self.connections.get(ws)
         if not user_id:
@@ -1960,6 +1997,7 @@ class PokerServer:
                 'wallet_deposit': self.handle_create_deposit, # Alias for client
                 'verify_deposit': self.handle_verify_deposit,
                 'capture_deposit': self.handle_verify_deposit, # Alias for client
+                'cancel_deposit': self.handle_cancel_deposit,
                 'withdraw': self.handle_withdraw,
                 'wallet_withdraw': self.handle_withdraw, # Alias for client
                 'get_statistics': self.handle_get_statistics,
