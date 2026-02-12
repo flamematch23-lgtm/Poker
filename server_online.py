@@ -14,6 +14,7 @@ import time
 import random
 from datetime import datetime
 import aiohttp
+from aiohttp import web
 import aiosqlite
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -786,9 +787,16 @@ class PokerServer:
                     level INTEGER DEFAULT 1,
                     avatar_id INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_login TIMESTAMP
+                    last_login TIMESTAMP,
+                    is_banned INTEGER DEFAULT 0
                 )
             ''')
+            
+            # Check for is_banned column (migration)
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+            except:
+                pass
             
             # Statistics table
             await db.execute('''
@@ -963,13 +971,16 @@ class PokerServer:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT id, username, chips, level, avatar_id FROM users WHERE email = ? AND password_hash = ?",
+                "SELECT id, username, chips, level, avatar_id, is_banned FROM users WHERE email = ? AND password_hash = ?",
                 (email, self.hash_password(password))
             )
             user = await cursor.fetchone()
             
             if not user:
                 return {"type": "login_result", "success": False, "error": "Credenziali non valide"}
+            
+            if user['is_banned']:
+                return {"type": "login_result", "success": False, "error": "Account sospeso. Contatta l'amministratore."}
             
             user_id = user['id']
             
@@ -2152,14 +2163,186 @@ class PokerServer:
                             pass
             print(f"Connection closed: {ws.remote_address}")
     
+    async def admin_serve_dashboard(self, request):
+        try:
+            path = "admin_panel.html"
+            if not os.path.exists(path):
+                path = os.path.join(os.path.dirname(__file__), "admin_panel.html")
+                
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return web.Response(text=content, content_type="text/html")
+        except FileNotFoundError:
+            return web.Response(text=f"Admin panel file not found. Checked: {path}", status=404)
+
+    async def admin_get_users(self, request):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT u.id, u.username, u.email, u.chips, u.level, u.is_banned, w.balance as wallet_balance
+                FROM users u
+                LEFT JOIN wallets w ON u.id = w.user_id
+            """)
+            rows = await cursor.fetchall()
+            
+            users = []
+            for row in rows:
+                u = dict(row)
+                u['is_online'] = u['id'] in self.user_connections
+                users.append(u)
+            
+            return web.json_response(users)
+
+    async def admin_get_tables(self, request):
+        tables_data = []
+        for tid, table in self.tables.items():
+            tables_data.append({
+                "id": tid,
+                "name": table.name,
+                "players": len(table.players),
+                "max_players": table.max_players,
+                "small_blind": table.small_blind,
+                "big_blind": table.big_blind,
+                "pot": table.pot,
+                "phase": table.game_phase
+            })
+        return web.json_response(tables_data)
+
+    async def admin_update_balance(self, request):
+        try:
+            user_id = int(request.match_info['id'])
+            data = await request.json()
+            amount = float(data.get('amount', 0))
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("UPDATE wallets SET balance = ? WHERE user_id = ?", (amount, user_id))
+                await db.commit()
+            
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_ban_user(self, request):
+        try:
+            user_id = int(request.match_info['id'])
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("UPDATE users SET is_banned = 1 WHERE id = ?", (user_id,))
+                await db.commit()
+            
+            # Disconnect if online
+            if user_id in self.user_connections:
+                ws = self.user_connections[user_id]
+                await ws.close()
+                
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_unban_user(self, request):
+        try:
+            user_id = int(request.match_info['id'])
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("UPDATE users SET is_banned = 0 WHERE id = ?", (user_id,))
+                await db.commit()
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_get_transactions(self, request):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT t.*, u.username 
+                FROM transactions t
+                JOIN users u ON t.user_id = u.id
+                ORDER BY t.created_at DESC LIMIT 100
+            """)
+            rows = await cursor.fetchall()
+            return web.json_response([dict(r) for r in rows])
+
+    async def admin_broadcast_message(self, request):
+        try:
+            data = await request.json()
+            message = data.get('message', '')
+            if not message:
+                return web.json_response({"success": False, "error": "Message required"}, status=400)
+            
+            payload = json.dumps({
+                "type": "notification",
+                "title": "Messaggio di Sistema",
+                "message": message,
+                "notification_type": "system"
+            })
+            
+            count = 0
+            for ws in list(self.connections.keys()):
+                try:
+                    await ws.send(payload)
+                    count += 1
+                except:
+                    pass
+                    
+            return web.json_response({"success": True, "count": count})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+
     async def run(self, host: str = "0.0.0.0", port: int = None):
         port = port or int(os.environ.get("PORT", 8765))
+        admin_port = 8766
+        
         await self.init_db()
         print(f"Poker Server v13 starting on {host}:{port}")
         print(f"Password recovery: ENABLED")
         print(f"PayPal: {'Configured' if PAYPAL_CLIENT_ID else 'Not configured'}")
+        
+        # Start Admin Server
+        app = web.Application()
+        # CORS
+        import aiohttp_cors
+        cors = aiohttp_cors.setup(app, defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+            )
+        })
+        
+        # Routes
+        app.router.add_get('/', self.admin_serve_dashboard)
+        
+        # API Routes with CORS
+        resource_users = cors.add(app.router.add_resource("/api/admin/users"))
+        cors.add(resource_users.add_route("GET", self.admin_get_users))
+        
+        resource_tables = cors.add(app.router.add_resource("/api/admin/tables"))
+        cors.add(resource_tables.add_route("GET", self.admin_get_tables))
+        
+        resource_balance = cors.add(app.router.add_resource("/api/admin/users/{id}/balance"))
+        cors.add(resource_balance.add_route("POST", self.admin_update_balance))
+        
+        # New Routes
+        resource_ban = cors.add(app.router.add_resource("/api/admin/users/{id}/ban"))
+        cors.add(resource_ban.add_route("POST", self.admin_ban_user))
+        
+        resource_unban = cors.add(app.router.add_resource("/api/admin/users/{id}/unban"))
+        cors.add(resource_unban.add_route("POST", self.admin_unban_user))
+        
+        resource_transactions = cors.add(app.router.add_resource("/api/admin/transactions"))
+        cors.add(resource_transactions.add_route("GET", self.admin_get_transactions))
+        
+        resource_broadcast = cors.add(app.router.add_resource("/api/admin/broadcast"))
+        cors.add(resource_broadcast.add_route("POST", self.admin_broadcast_message))
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host, admin_port)
+        await site.start()
+        print(f"Admin Panel running on http://{host}:{admin_port}")
+
         async with websockets.serve(self.handle_connection, host, port):
             await asyncio.Future()
+
 
 if __name__ == "__main__":
     server = PokerServer()
