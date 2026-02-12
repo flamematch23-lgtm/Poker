@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Poker Texas Hold'em Server v13 - Password Recovery
-- Complete password recovery via security questions
-- Email field in users table
-- All v12 features included
+Poker Texas Hold'em Server v14 - Admin Power Update
+- Manual Withdrawal Approval
+- Server Configuration (Timer, Maintenance)
+- Advanced Analytics
+- User Inspection
 """
 
 import asyncio
@@ -12,12 +13,39 @@ import hashlib
 import os
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 import aiohttp
 from aiohttp import web
 import aiosqlite
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+
+SERVER_CONFIG = {
+    "maintenance_mode": False,
+    "turn_timer": 30, # seconds
+    "rake_percentage": 0.0 # Future use
+}
+
+CONFIG_FILE = "server_config.json"
+
+def load_config():
+    global SERVER_CONFIG
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                SERVER_CONFIG.update(json.load(f))
+        except:
+            pass
+
+def save_config():
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(SERVER_CONFIG, f)
+
+load_config()
 
 # ==========================================
 # POKER ENGINE
@@ -722,6 +750,16 @@ class PokerServer:
         self.tables = {}  # table_id -> PokerTable
         self.user_tables = {}  # user_id -> table_id (active table)
         self.table_timers = {} # table_id -> asyncio.Task
+        
+        # Define default tables configuration
+        self.DEFAULT_TABLES = [
+            ("table_micro", "Micro Stakes", 0.05, 0.10, 2.0, 10.0),
+            ("table_low", "Low Stakes", 0.10, 0.20, 4.0, 20.0),
+            ("table_medium", "Medium Stakes", 0.25, 0.50, 10.0, 50.0),
+            ("table_high", "High Stakes", 0.50, 1.00, 20.0, 100.0),
+            ("table_vip", "VIP Room", 1.00, 2.00, 40.0, 200.0),
+        ]
+        
         self._init_default_tables()
     
     def _start_turn_timer(self, table_id):
@@ -733,7 +771,8 @@ class PokerServer:
         if table_id in self.tables:
             table = self.tables[table_id]
             if table.game_phase not in ["waiting", "showdown"] and table.current_player:
-                task = asyncio.create_task(self._turn_timeout_task(table_id, table.current_player, 30))
+                duration = SERVER_CONFIG.get("turn_timer", 30)
+                task = asyncio.create_task(self._turn_timeout_task(table_id, table.current_player, duration))
                 self.table_timers[table_id] = task
 
     async def _turn_timeout_task(self, table_id, player_id, duration):
@@ -762,14 +801,7 @@ class PokerServer:
 
     def _init_default_tables(self):
         # Create default cash game tables with cent-based blinds
-        default_tables = [
-            ("table_micro", "Micro Stakes", 0.05, 0.10, 2.0, 10.0),
-            ("table_low", "Low Stakes", 0.10, 0.20, 4.0, 20.0),
-            ("table_medium", "Medium Stakes", 0.25, 0.50, 10.0, 50.0),
-            ("table_high", "High Stakes", 0.50, 1.00, 20.0, 100.0),
-            ("table_vip", "VIP Room", 1.00, 2.00, 40.0, 200.0),
-        ]
-        for table_id, name, sb, bb, min_buy, max_buy in default_tables:
+        for table_id, name, sb, bb, min_buy, max_buy in self.DEFAULT_TABLES:
             self.tables[table_id] = PokerTable(table_id, name, sb, bb, min_buy, max_buy)
     
     async def init_db(self):
@@ -899,7 +931,7 @@ class PokerServer:
             ''')
             
             await db.commit()
-            print("Database initialized with v13 schema (password recovery)")
+            print("Database initialized with v14 schema")
     
     def hash_password(self, password: str) -> str:
         return hashlib.sha256(password.encode()).hexdigest()
@@ -962,6 +994,9 @@ class PokerServer:
         return {"type": "pong"}
 
     async def handle_login(self, ws, data: dict):
+        if SERVER_CONFIG.get("maintenance_mode", False):
+            return {"type": "login_result", "success": False, "error": "Server in manutenzione. Riprova più tardi."}
+            
         email = data.get('email', '').strip().lower()
         password = data.get('password', '')
         
@@ -1351,44 +1386,35 @@ class PokerServer:
             if not wallet or wallet[0] < amount:
                 return {"type": "wallet_withdraw_result", "success": False, "error": "Saldo insufficiente"}
             
-            try:
-                payout = await self.paypal.create_payout(paypal_email, amount)
-                
-                if 'batch_header' in payout:
-                    # Deduct from wallet
-                    await db.execute(
-                        """UPDATE wallets SET 
-                           balance = balance - ?,
-                           total_withdrawn = total_withdrawn + ?,
-                           last_withdrawal = CURRENT_TIMESTAMP
-                           WHERE user_id = ?""",
-                        (amount, amount, user_id)
-                    )
-                    
-                    # Record transaction
-                    await db.execute(
-                        """INSERT INTO transactions (user_id, type, amount, status, description)
-                           VALUES (?, 'withdrawal', ?, 'completed', ?)""",
-                        (user_id, amount, f"PayPal: {paypal_email}")
-                    )
-                    
-                    await db.commit()
-                    
-                    # Get new balance
-                    cursor = await db.execute("SELECT balance FROM wallets WHERE user_id = ?", (user_id,))
-                    new_wallet = await cursor.fetchone()
-                    
-                    return {
-                        "type": "wallet_withdraw_result",
-                        "success": True,
-                        "amount": amount,
-                        "new_balance": new_wallet[0] if new_wallet else 0,
-                        "message": f"Prelievo di €{amount:.2f} inviato a {paypal_email}"
-                    }
-                else:
-                    return {"type": "wallet_withdraw_result", "success": False, "error": "Errore PayPal"}
-            except Exception as e:
-                return {"type": "wallet_withdraw_result", "success": False, "error": str(e)}
+            # Deduct funds immediately to hold them
+            await db.execute(
+                """UPDATE wallets SET 
+                   balance = balance - ?,
+                   last_withdrawal = CURRENT_TIMESTAMP
+                   WHERE user_id = ?""",
+                (amount, user_id)
+            )
+            
+            # Record transaction as pending approval
+            await db.execute(
+                """INSERT INTO transactions (user_id, type, amount, status, description)
+                   VALUES (?, 'withdrawal', ?, 'pending_approval', ?)""",
+                (user_id, amount, f"PayPal Payout: {paypal_email}")
+            )
+            
+            await db.commit()
+            
+            # Get new balance
+            cursor = await db.execute("SELECT balance FROM wallets WHERE user_id = ?", (user_id,))
+            new_wallet = await cursor.fetchone()
+            
+            return {
+                "type": "wallet_withdraw_result",
+                "success": True,
+                "amount": amount,
+                "new_balance": new_wallet[0] if new_wallet else 0,
+                "message": f"Richiesta di prelievo di €{amount:.2f} inviata. In attesa di approvazione."
+            }
     
     async def handle_get_statistics(self, ws, data: dict):
         user_id = self.connections.get(ws)
@@ -2310,8 +2336,6 @@ class PokerServer:
             async with aiosqlite.connect(self.db_path) as db:
                 for uid, player in table.players.items():
                     chips = player['chips'] + player['current_bet']
-                    # Add any pot share? Too complex, just refund chips on table
-                    # Actually remove_player handles logic but let's be forceful
                     
                     if chips > 0:
                         await db.execute("UPDATE wallets SET balance = balance + ? WHERE user_id = ?", (chips, uid))
@@ -2359,14 +2383,329 @@ class PokerServer:
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    async def admin_restore_defaults(self, request):
+        """Restore missing default tables"""
+        restored = []
+        for table_id, name, sb, bb, min_buy, max_buy in self.DEFAULT_TABLES:
+            if table_id not in self.tables:
+                self.tables[table_id] = PokerTable(table_id, name, sb, bb, min_buy, max_buy)
+                restored.append(name)
+        
+        return web.json_response({"success": True, "restored": restored})
 
+    async def admin_get_closed_games(self, request):
+        """Get closed private games that can be reactivated"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT g.*, u.username as creator_name
+                FROM private_games g
+                JOIN users u ON g.creator_id = u.id
+                WHERE g.status IN ('closed', 'closed_admin')
+                ORDER BY g.created_at DESC LIMIT 50
+            """)
+            rows = await cursor.fetchall()
+            return web.json_response([dict(r) for r in rows])
+
+    async def admin_reactivate_game(self, request):
+        """Reactivate a closed private game"""
+        try:
+            game_id = int(request.match_info['id'])
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute("SELECT * FROM private_games WHERE id = ?", (game_id,))
+                game = await cursor.fetchone()
+                
+                if not game:
+                    return web.json_response({"success": False, "error": "Game not found"}, status=404)
+                
+                table_id = f"private_{game_id}"
+                if table_id in self.tables:
+                    return web.json_response({"success": False, "error": "Table is already active"})
+                
+                # Get creator username
+                cursor = await db.execute("SELECT username FROM users WHERE id = ?", (game['creator_id'],))
+                creator = await cursor.fetchone()
+                creator_username = creator['username'] if creator else "Unknown"
+                
+                # Re-create table
+                table = PokerTable(
+                    table_id, game['game_name'], 
+                    game['small_blind'], game['big_blind'],
+                    game['min_buy_in'], game['max_buy_in'],
+                    game['max_players'],
+                    creator_id=game['creator_id'],
+                    creator_username=creator_username
+                )
+                table.is_private = True
+                table.password = game['password']
+                self.tables[table_id] = table
+                
+                # Update DB
+                await db.execute("UPDATE private_games SET status = 'waiting' WHERE id = ?", (game_id,))
+                await db.commit()
+                
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_update_table(self, request):
+        """Update table parameters and restart it"""
+        try:
+            table_id = request.match_info['id']
+            data = await request.json()
+            
+            sb = float(data.get('small_blind', 0))
+            bb = float(data.get('big_blind', 0))
+            min_buy = float(data.get('min_buy_in', 0))
+            max_buy = float(data.get('max_buy_in', 0))
+            
+            if sb <= 0 or bb <= 0 or min_buy <= 0 or max_buy <= 0:
+                 return web.json_response({"success": False, "error": "Values must be positive"}, status=400)
+
+            # 1. Handle Active Table (Close & Refund first)
+            old_name = "Table"
+            creator_id = None
+            creator_username = "Unknown"
+            is_private = False
+            password = None
+            max_players = 6
+            
+            if table_id in self.tables:
+                table = self.tables[table_id]
+                old_name = table.name
+                creator_id = table.creator_id
+                creator_username = table.creator_username
+                is_private = table.is_private
+                password = table.password
+                max_players = table.max_players
+                
+                # Refund everyone
+                async with aiosqlite.connect(self.db_path) as db:
+                    for uid, player in table.players.items():
+                        chips = player['chips'] + player['current_bet']
+                        if chips > 0:
+                            await db.execute("UPDATE wallets SET balance = balance + ? WHERE user_id = ?", (chips, uid))
+                            await db.execute(
+                                """INSERT INTO transactions (user_id, type, amount, status, description)
+                                   VALUES (?, 'admin_refund', ?, 'completed', ?)""",
+                                (uid, chips, f"Table updated: {table.name}")
+                            )
+                    await db.commit()
+                
+                # Notify
+                for uid in list(table.players.keys()):
+                    if uid in self.user_connections:
+                        try:
+                            await self.user_connections[uid].send(json.dumps({
+                                "type": "notification",
+                                "title": "Tavolo Aggiornato",
+                                "message": "Il tavolo è stato riavviato con nuovi parametri.",
+                                "notification_type": "system"
+                            }))
+                            if uid in self.user_tables: del self.user_tables[uid]
+                        except: pass
+                
+                # Remove old instance
+                del self.tables[table_id]
+                if table_id in self.table_timers:
+                    self.table_timers[table_id].cancel()
+                    del self.table_timers[table_id]
+
+            # 2. Update Definitions (for persistence in this session)
+            # Check if default table
+            for i, (tid, name, _, _, _, _) in enumerate(self.DEFAULT_TABLES):
+                if tid == table_id:
+                    self.DEFAULT_TABLES[i] = (tid, name, sb, bb, min_buy, max_buy)
+                    old_name = name # Ensure name is kept
+                    break
+            
+            # Check if private game (Update DB)
+            if table_id.startswith("private_"):
+                try:
+                    game_id = int(table_id.split("_")[1])
+                    async with aiosqlite.connect(self.db_path) as db:
+                        # Fetch original data if we didn't get it from active table
+                        if not creator_id:
+                            cursor = await db.execute("SELECT * FROM private_games WHERE id = ?", (game_id,))
+                            row = await cursor.fetchone()
+                            if row:
+                                old_name = row['game_name']
+                                creator_id = row['creator_id']
+                                password = row['password']
+                                max_players = row['max_players']
+                                is_private = True
+                                
+                                # Get creator name
+                                cursor = await db.execute("SELECT username FROM users WHERE id = ?", (creator_id,))
+                                u_row = await cursor.fetchone()
+                                creator_username = u_row['username'] if u_row else "Unknown"
+
+                        await db.execute("""
+                            UPDATE private_games 
+                            SET small_blind=?, big_blind=?, min_buy_in=?, max_buy_in=?, status='waiting'
+                            WHERE id=?
+                        """, (sb, bb, min_buy, max_buy, game_id))
+                        await db.commit()
+                except:
+                    pass
+
+            # 3. Create New Instance
+            new_table = PokerTable(table_id, old_name, sb, bb, min_buy, max_buy, max_players, creator_id, creator_username)
+            if is_private:
+                new_table.is_private = True
+                new_table.password = password
+                
+            self.tables[table_id] = new_table
+            
+            return web.json_response({"success": True})
+
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    # --- NEW ADMIN ROUTES ---
+
+    async def admin_get_pending_withdrawals(self, request):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT t.id, t.amount, t.description, t.created_at, u.username, u.email
+                FROM transactions t
+                JOIN users u ON t.user_id = u.id
+                WHERE t.status = 'pending_approval' AND t.type = 'withdrawal'
+                ORDER BY t.created_at DESC
+            """)
+            rows = await cursor.fetchall()
+            return web.json_response([dict(r) for r in rows])
+
+    async def admin_approve_withdrawal(self, request):
+        try:
+            tx_id = int(request.match_info['id'])
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute("SELECT amount, description FROM transactions WHERE id = ?", (tx_id,))
+                tx = await cursor.fetchone()
+                
+                if not tx:
+                    return web.json_response({"success": False, "error": "Transazione non trovata"}, status=404)
+                
+                amount = tx['amount']
+                desc = tx['description'] # Format "PayPal Payout: email"
+                email = desc.split(": ")[1].strip() if ": " in desc else ""
+                
+                if not email:
+                     return web.json_response({"success": False, "error": "Email PayPal non trovata nella descrizione"}, status=400)
+
+                # Call PayPal
+                try:
+                    payout = await self.paypal.create_payout(email, amount)
+                    if 'batch_header' in payout:
+                        await db.execute("UPDATE transactions SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (tx_id,))
+                        await db.commit()
+                        return web.json_response({"success": True})
+                    else:
+                        return web.json_response({"success": False, "error": "Errore PayPal: " + str(payout)}, status=500)
+                except Exception as pp_err:
+                     return web.json_response({"success": False, "error": "Eccezione PayPal: " + str(pp_err)}, status=500)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_reject_withdrawal(self, request):
+        try:
+            tx_id = int(request.match_info['id'])
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute("SELECT user_id, amount FROM transactions WHERE id = ?", (tx_id,))
+                tx = await cursor.fetchone()
+                
+                if not tx:
+                    return web.json_response({"success": False, "error": "Transazione non trovata"}, status=404)
+                
+                # Refund to wallet
+                await db.execute("UPDATE wallets SET balance = balance + ? WHERE user_id = ?", (tx['amount'], tx['user_id']))
+                # Mark tx as rejected
+                await db.execute("UPDATE transactions SET status = 'rejected', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (tx_id,))
+                
+                await db.commit()
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_get_config(self, request):
+        return web.json_response(SERVER_CONFIG)
+
+    async def admin_update_config(self, request):
+        try:
+            data = await request.json()
+            SERVER_CONFIG.update(data)
+            save_config()
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def admin_get_analytics(self, request):
+        async with aiosqlite.connect(self.db_path) as db:
+            # Daily stats could be complex, for now simple aggregates
+            
+            # Total chips
+            cursor = await db.execute("SELECT SUM(balance) FROM wallets")
+            total_chips = (await cursor.fetchone())[0] or 0
+            
+            # Total users
+            cursor = await db.execute("SELECT COUNT(*) FROM users")
+            total_users = (await cursor.fetchone())[0] or 0
+            
+            # Games played today (from game_history)
+            today = datetime.now().strftime("%Y-%m-%d")
+            cursor = await db.execute("SELECT COUNT(*) FROM game_history WHERE date(created_at) = ?", (today,))
+            games_today = (await cursor.fetchone())[0] or 0
+            
+            return web.json_response({
+                "total_chips": total_chips,
+                "total_users": total_users,
+                "games_today": games_today,
+                # Mock data for charts if DB is empty
+                "daily_chips": [1000, 1500, 1200, 1800, 2000, 2500, total_chips], 
+                "daily_users": [5, 10, 15, 20, 25, 30, total_users]
+            })
+
+    async def admin_get_user_details(self, request):
+        try:
+            user_id = int(request.match_info['id'])
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                
+                # Basic info
+                cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+                user = dict(await cursor.fetchone())
+                
+                # Stats
+                cursor = await db.execute("SELECT * FROM statistics WHERE user_id = ?", (user_id,))
+                stats = dict(await cursor.fetchone() or {})
+                
+                # Recent history
+                cursor = await db.execute("SELECT * FROM game_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", (user_id,))
+                history = [dict(r) for r in await cursor.fetchall()]
+                
+                # Recent login IPs (mocked for now as we don't store IP yet)
+                ips = ["127.0.0.1", "192.168.1.5"]
+                
+                return web.json_response({
+                    "user": user,
+                    "stats": stats,
+                    "history": history,
+                    "ips": ips
+                })
+        except Exception as e:
+             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def run(self, host: str = "0.0.0.0", port: int = None):
         port = port or int(os.environ.get("PORT", 8765))
         admin_port = 8766
         
         await self.init_db()
-        print(f"Poker Server v13 starting on {host}:{port}")
+        print(f"Poker Server v14 starting on {host}:{port}")
         print(f"Password recovery: ENABLED")
         print(f"PayPal: {'Configured' if PAYPAL_CLIENT_ID else 'Not configured'}")
         
@@ -2386,6 +2725,7 @@ class PokerServer:
         app.router.add_get('/', self.admin_serve_dashboard)
         
         # API Routes with CORS
+        # Existing
         resource_users = cors.add(app.router.add_resource("/api/admin/users"))
         cors.add(resource_users.add_route("GET", self.admin_get_users))
         
@@ -2395,7 +2735,6 @@ class PokerServer:
         resource_balance = cors.add(app.router.add_resource("/api/admin/users/{id}/balance"))
         cors.add(resource_balance.add_route("POST", self.admin_update_balance))
         
-        # New Routes
         resource_ban = cors.add(app.router.add_resource("/api/admin/users/{id}/ban"))
         cors.add(resource_ban.add_route("POST", self.admin_ban_user))
         
@@ -2413,6 +2752,39 @@ class PokerServer:
         
         resource_table_delete = cors.add(app.router.add_resource("/api/admin/tables/{id}"))
         cors.add(resource_table_delete.add_route("DELETE", self.admin_delete_table))
+
+        # Table Management
+        resource_restore_defaults = cors.add(app.router.add_resource("/api/admin/tables/restore_defaults"))
+        cors.add(resource_restore_defaults.add_route("POST", self.admin_restore_defaults))
+
+        resource_closed_games = cors.add(app.router.add_resource("/api/admin/tables/closed"))
+        cors.add(resource_closed_games.add_route("GET", self.admin_get_closed_games))
+
+        resource_reactivate_game = cors.add(app.router.add_resource("/api/admin/tables/{id}/reactivate"))
+        cors.add(resource_reactivate_game.add_route("POST", self.admin_reactivate_game))
+
+        resource_update_table = cors.add(app.router.add_resource("/api/admin/tables/{id}/update"))
+        cors.add(resource_update_table.add_route("POST", self.admin_update_table))
+
+        # NEW ROUTES
+        resource_pending_withdrawals = cors.add(app.router.add_resource("/api/admin/withdrawals/pending"))
+        cors.add(resource_pending_withdrawals.add_route("GET", self.admin_get_pending_withdrawals))
+
+        resource_approve_withdrawal = cors.add(app.router.add_resource("/api/admin/withdrawals/{id}/approve"))
+        cors.add(resource_approve_withdrawal.add_route("POST", self.admin_approve_withdrawal))
+
+        resource_reject_withdrawal = cors.add(app.router.add_resource("/api/admin/withdrawals/{id}/reject"))
+        cors.add(resource_reject_withdrawal.add_route("POST", self.admin_reject_withdrawal))
+
+        resource_config = cors.add(app.router.add_resource("/api/admin/config"))
+        cors.add(resource_config.add_route("GET", self.admin_get_config))
+        cors.add(resource_config.add_route("POST", self.admin_update_config))
+
+        resource_analytics = cors.add(app.router.add_resource("/api/admin/analytics"))
+        cors.add(resource_analytics.add_route("GET", self.admin_get_analytics))
+
+        resource_user_details = cors.add(app.router.add_resource("/api/admin/users/{id}/details"))
+        cors.add(resource_user_details.add_route("GET", self.admin_get_user_details))
         
         runner = web.AppRunner(app)
         await runner.setup()

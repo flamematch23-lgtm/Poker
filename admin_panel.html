@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Poker Texas Admin Panel</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
             --primary: #0D1117;
@@ -39,6 +40,7 @@
             border-right: 1px solid #30363d;
             position: fixed;
             height: 100%;
+            overflow-y: auto;
         }
 
         .logo {
@@ -61,11 +63,21 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            position: relative;
         }
 
         .menu-item:hover, .menu-item.active {
             background-color: rgba(255, 215, 0, 0.1);
             color: var(--accent);
+        }
+
+        .badge {
+            background-color: var(--danger);
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: auto;
         }
 
         /* Main Content */
@@ -143,6 +155,7 @@
         .status-online { background-color: rgba(35, 134, 54, 0.2); color: #3fb950; }
         .status-offline { background-color: rgba(139, 148, 158, 0.2); color: #8b949e; }
         .status-banned { background-color: rgba(248, 81, 73, 0.2); color: #f85149; }
+        .status-pending { background-color: rgba(210, 153, 34, 0.2); color: #d29922; }
 
         .btn {
             padding: 6px 12px;
@@ -156,6 +169,7 @@
         .btn-primary { background-color: var(--accent); color: var(--primary); }
         .btn-danger { background-color: var(--danger); color: white; }
         .btn-success { background-color: var(--success); color: white; }
+        .btn-info { background-color: #58a6ff; color: var(--primary); }
         .btn-sm { font-size: 12px; padding: 4px 8px; }
 
         /* Modal */
@@ -167,13 +181,16 @@
             background: rgba(0,0,0,0.7);
             align-items: center;
             justify-content: center;
+            z-index: 1000;
         }
 
         .modal-content {
             background: var(--secondary);
             padding: 30px;
             border-radius: 12px;
-            width: 400px;
+            width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
             border: 1px solid var(--accent);
         }
 
@@ -187,13 +204,51 @@
             color: var(--text-dim);
         }
 
-        .form-group input, .form-group textarea {
+        .form-group input, .form-group textarea, .form-group select {
             width: 100%;
             padding: 10px;
             background: var(--primary);
             border: 1px solid #30363d;
             color: white;
             border-radius: 4px;
+        }
+        
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+
+        .switch input { opacity: 0; width: 0; height: 0; }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #30363d;
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--success);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
         }
 
         .toast {
@@ -206,7 +261,7 @@
             border-radius: 8px;
             display: none;
             animation: slideIn 0.3s ease;
-            z-index: 1000;
+            z-index: 2000;
         }
 
         @keyframes slideIn {
@@ -216,6 +271,23 @@
 
         .section { display: none; }
         .section.active { display: block; }
+        
+        /* Stats Grid for User Details */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-item {
+            background: var(--primary);
+            padding: 10px;
+            border-radius: 4px;
+        }
+        
+        .stat-label { color: var(--text-dim); font-size: 12px; }
+        .stat-value { font-weight: bold; }
     </style>
 </head>
 <body>
@@ -230,6 +302,10 @@
         </div>
         <div class="menu-item" onclick="showSection('users')">
             <i class="fas fa-users"></i> Utenti
+        </div>
+        <div class="menu-item" onclick="showSection('withdrawals')">
+            <i class="fas fa-money-bill-wave"></i> Prelievi
+            <span id="badge-withdrawals" class="badge" style="display:none">0</span>
         </div>
         <div class="menu-item" onclick="showSection('tables')">
             <i class="fas fa-table"></i> Tavoli Attivi
@@ -274,12 +350,24 @@
                 </div>
             </div>
 
+            <!-- Charts -->
+            <div class="card-grid" style="grid-template-columns: 1fr 1fr;">
+                <div class="card">
+                    <h3>Trend Chips (Ultimi 7gg)</h3>
+                    <canvas id="chart-chips"></canvas>
+                </div>
+                <div class="card">
+                    <h3>Trend Utenti (Ultimi 7gg)</h3>
+                    <canvas id="chart-users"></canvas>
+                </div>
+            </div>
+
             <div class="card">
                 <h3>Stato Server</h3>
                 <div style="margin-top: 10px;">
                     <p><i class="fas fa-check-circle" style="color: var(--success)"></i> Server Online (Port 8765)</p>
                     <p><i class="fas fa-check-circle" style="color: var(--success)"></i> Admin Panel Online (Port 8766)</p>
-                    <p><i class="fas fa-database" style="color: var(--accent)"></i> Database: SQLite (v13)</p>
+                    <p><i class="fas fa-database" style="color: var(--accent)"></i> Database: SQLite (v14)</p>
                 </div>
             </div>
         </div>
@@ -308,12 +396,49 @@
             </table>
         </div>
 
+        <!-- Withdrawals Section -->
+        <div id="withdrawals" class="section">
+            <div class="header">
+                <h1>Richieste di Prelievo</h1>
+                <button class="btn btn-primary" onclick="loadWithdrawals()"><i class="fas fa-sync"></i> Aggiorna</button>
+            </div>
+            <p style="color: var(--text-dim); margin-bottom: 20px;">
+                Questi prelievi richiedono approvazione manuale. L'approvazione invierà automaticamente i fondi via PayPal.
+            </p>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Utente</th>
+                        <th>Importo</th>
+                        <th>Email PayPal</th>
+                        <th>Data Richiesta</th>
+                        <th>Azioni</th>
+                    </tr>
+                </thead>
+                <tbody id="withdrawals-table-body">
+                    <!-- Populated via JS -->
+                </tbody>
+            </table>
+        </div>
+
         <!-- Tables Section -->
         <div id="tables" class="section">
             <div class="header">
-                <h1>Tavoli Attivi</h1>
+                <h1>Gestione Tavoli</h1>
+                <div>
+                    <button class="btn btn-primary" onclick="restoreDefaults()"><i class="fas fa-undo"></i> Ripristina Default</button>
+                    <button class="btn btn-primary" onclick="refreshTables()"><i class="fas fa-sync"></i> Aggiorna</button>
+                </div>
             </div>
+            
+            <h2 style="margin-bottom: 15px; font-size: 18px; color: var(--accent);">Tavoli Attivi</h2>
             <div id="tables-container" class="card-grid">
+                <!-- Populated via JS -->
+            </div>
+
+            <h2 style="margin-top: 40px; margin-bottom: 15px; font-size: 18px; color: var(--text-dim);">Storico Partite Private (Chiuse)</h2>
+            <div id="closed-tables-container" class="card-grid">
                 <!-- Populated via JS -->
             </div>
         </div>
@@ -371,13 +496,43 @@
             <div class="header">
                 <h1>Sistema</h1>
             </div>
-            <div class="card" style="max-width: 600px;">
-                <h3>Invia Messaggio Globale</h3>
-                <p style="color: var(--text-dim); margin-bottom: 15px;">Invia una notifica a tutti gli utenti connessi.</p>
-                <div class="form-group">
-                    <textarea id="broadcast-message" rows="4" placeholder="Scrivi il messaggio qui..."></textarea>
+            
+            <div class="card-grid" style="grid-template-columns: 1fr 1fr;">
+                <!-- Configuration Card -->
+                <div class="card">
+                    <h3>Configurazione Server</h3>
+                    <p style="color: var(--text-dim); margin-bottom: 15px;">Modifica le impostazioni in tempo reale.</p>
+                    
+                    <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label style="margin: 0;">Modalità Manutenzione</label>
+                        <label class="switch">
+                            <input type="checkbox" id="config-maintenance">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Timer Turno (secondi)</label>
+                        <input type="number" id="config-timer" min="10" max="120">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Rake (%) - Futuro</label>
+                        <input type="number" id="config-rake" min="0" max="10" step="0.1">
+                    </div>
+
+                    <button class="btn btn-success" onclick="saveConfig()">Salva Configurazione</button>
                 </div>
-                <button class="btn btn-primary" onclick="sendBroadcast()">Invia Messaggio</button>
+
+                <!-- Broadcast Card -->
+                <div class="card">
+                    <h3>Invia Messaggio Globale</h3>
+                    <p style="color: var(--text-dim); margin-bottom: 15px;">Invia una notifica a tutti gli utenti connessi.</p>
+                    <div class="form-group">
+                        <textarea id="broadcast-message" rows="4" placeholder="Scrivi il messaggio qui..."></textarea>
+                    </div>
+                    <button class="btn btn-primary" onclick="sendBroadcast()">Invia Messaggio</button>
+                </div>
             </div>
         </div>
     </div>
@@ -397,9 +552,104 @@
                 <input type="number" id="edit-chips" step="0.01">
             </div>
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                <button class="btn" onclick="closeModal()">Annulla</button>
+                <button class="btn" onclick="document.getElementById('editModal').style.display='none'">Annulla</button>
                 <button class="btn btn-primary" onclick="saveUser()">Salva</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Edit Table Modal -->
+    <div id="editTableModal" class="modal">
+        <div class="modal-content">
+            <h2>Modifica Tavolo</h2>
+            <p style="color: var(--danger); font-size: 12px; margin-bottom: 15px;">
+                <i class="fas fa-exclamation-triangle"></i> Attenzione: Salvare chiuderà il tavolo corrente, rimborserà i giocatori e lo riaprirà con i nuovi parametri.
+            </p>
+            <input type="hidden" id="edit-table-id">
+            <div class="form-group">
+                <label>Nome Tavolo</label>
+                <input type="text" id="edit-table-name" disabled style="opacity: 0.7">
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex: 1">
+                    <label>Small Blind (€)</label>
+                    <input type="number" id="edit-sb" step="0.01">
+                </div>
+                <div class="form-group" style="flex: 1">
+                    <label>Big Blind (€)</label>
+                    <input type="number" id="edit-bb" step="0.01">
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex: 1">
+                    <label>Min Buy-in (€)</label>
+                    <input type="number" id="edit-min" step="0.01">
+                </div>
+                <div class="form-group" style="flex: 1">
+                    <label>Max Buy-in (€)</label>
+                    <input type="number" id="edit-max" step="0.01">
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn" onclick="document.getElementById('editTableModal').style.display='none'">Annulla</button>
+                <button class="btn btn-primary" onclick="saveTableUpdate()">Salva e Riavvia</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Details Modal -->
+    <div id="detailsModal" class="modal">
+        <div class="modal-content" style="width: 700px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 id="details-username">Dettagli Utente</h2>
+                <button class="btn btn-sm btn-danger" onclick="document.getElementById('detailsModal').style.display='none'"><i class="fas fa-times"></i></button>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Email</div>
+                    <div class="stat-value" id="d-email">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Data Registrazione</div>
+                    <div class="stat-value" id="d-created">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Partite Giocate</div>
+                    <div class="stat-value" id="d-games">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Vittorie</div>
+                    <div class="stat-value" id="d-wins">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Chips Vinte Totali</div>
+                    <div class="stat-value" id="d-chips-won">-</div>
+                </div>
+                 <div class="stat-item">
+                    <div class="stat-label">Chips Perse Totali</div>
+                    <div class="stat-value" id="d-chips-lost">-</div>
+                </div>
+            </div>
+
+            <h3>IP Recenti</h3>
+            <div class="stat-item" style="margin-bottom: 20px;">
+                <div class="stat-value" id="d-ips" style="font-family: monospace;">-</div>
+            </div>
+
+            <h3>Ultime Partite</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Gioco</th>
+                        <th>Risultato</th>
+                        <th>Chips</th>
+                        <th>Data</th>
+                    </tr>
+                </thead>
+                <tbody id="d-history-body">
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -416,16 +666,25 @@
             
             // Highlight menu item
             const items = document.querySelectorAll('.menu-item');
-            if(id === 'dashboard') items[0].classList.add('active');
-            if(id === 'users') items[1].classList.add('active');
-            if(id === 'tables') items[2].classList.add('active');
-            if(id === 'transactions') items[3].classList.add('active');
-            if(id === 'history') items[4].classList.add('active');
-            if(id === 'system') items[5].classList.add('active');
+            const map = {
+                'dashboard': 0,
+                'users': 1,
+                'withdrawals': 2,
+                'tables': 3,
+                'transactions': 4,
+                'history': 5,
+                'system': 6
+            };
+            if(map[id] !== undefined) items[map[id]].classList.add('active');
 
             if(id === 'transactions') loadTransactions();
             else if(id === 'history') loadHistory();
-            else refreshData();
+            else if(id === 'withdrawals') loadWithdrawals();
+            else if(id === 'system') loadConfig();
+            else if(id === 'dashboard') {
+                refreshData();
+                loadAnalytics();
+            }
         }
 
         // Data Fetching
@@ -436,11 +695,200 @@
                 renderUsers(users);
                 updateStats(users);
 
+                refreshTables();
+                
+                // Update withdrawal badge
+                loadWithdrawals(true); 
+
+            } catch (e) {
+                console.error("Error fetching data:", e);
+            }
+        }
+
+        async function refreshTables() {
+            try {
                 const tablesRes = await fetch(`${API_BASE}/admin/tables`);
                 const tables = await tablesRes.json();
                 renderTables(tables);
+
+                const closedRes = await fetch(`${API_BASE}/admin/tables/closed`);
+                const closed = await closedRes.json();
+                renderClosedTables(closed);
             } catch (e) {
-                console.error("Error fetching data:", e);
+                console.error("Error fetching tables:", e);
+            }
+        }
+
+        // Charts
+        let chipsChart = null;
+        let usersChart = null;
+
+        async function loadAnalytics() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/analytics`);
+                const data = await res.json();
+                
+                // Setup Chips Chart
+                const ctxChips = document.getElementById('chart-chips').getContext('2d');
+                if(chipsChart) chipsChart.destroy();
+                
+                chipsChart = new Chart(ctxChips, {
+                    type: 'line',
+                    data: {
+                        labels: ['6gg fa', '5gg fa', '4gg fa', '3gg fa', '2gg fa', 'Ieri', 'Oggi'],
+                        datasets: [{
+                            label: 'Chips Totali',
+                            data: data.daily_chips,
+                            borderColor: '#FFD700',
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+
+                // Setup Users Chart
+                const ctxUsers = document.getElementById('chart-users').getContext('2d');
+                if(usersChart) usersChart.destroy();
+
+                usersChart = new Chart(ctxUsers, {
+                    type: 'bar',
+                    data: {
+                        labels: ['6gg fa', '5gg fa', '4gg fa', '3gg fa', '2gg fa', 'Ieri', 'Oggi'],
+                        datasets: [{
+                            label: 'Nuovi Utenti',
+                            data: data.daily_users,
+                            backgroundColor: '#238636'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+
+            } catch(e) {
+                console.error("Analytics error", e);
+            }
+        }
+
+        // Withdrawals
+        async function loadWithdrawals(onlyBadge = false) {
+            try {
+                const res = await fetch(`${API_BASE}/admin/withdrawals/pending`);
+                const list = await res.json();
+                
+                // Update badge
+                const badge = document.getElementById('badge-withdrawals');
+                if(list.length > 0) {
+                    badge.innerText = list.length;
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.style.display = 'none';
+                }
+
+                if(onlyBadge) return;
+
+                const tbody = document.getElementById('withdrawals-table-body');
+                tbody.innerHTML = '';
+                
+                if(list.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-dim)">Nessuna richiesta in attesa</td></tr>';
+                    return;
+                }
+
+                list.forEach(item => {
+                    const tr = document.createElement('tr');
+                    // Extract email from description "PayPal Payout: email"
+                    let email = item.description;
+                    if(email.includes(': ')) email = email.split(': ')[1];
+
+                    tr.innerHTML = `
+                        <td>${item.id}</td>
+                        <td>${item.username}</td>
+                        <td style="font-weight:bold; color: var(--accent)">€${item.amount.toFixed(2)}</td>
+                        <td>${email}</td>
+                        <td>${new Date(item.created_at).toLocaleString()}</td>
+                        <td>
+                            <button class="btn btn-success btn-sm" onclick="approveWithdrawal(${item.id})"><i class="fas fa-check"></i> Approva</button>
+                            <button class="btn btn-danger btn-sm" onclick="rejectWithdrawal(${item.id})"><i class="fas fa-times"></i> Rifiuta</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function approveWithdrawal(id) {
+            if(!confirm("Confermi l'approvazione? Verrà inviato un pagamento PayPal reale.")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/withdrawals/${id}/approve`, { method: 'POST' });
+                const data = await res.json();
+                if(data.success) {
+                    showToast("Prelievo approvato e inviato!");
+                    loadWithdrawals();
+                } else {
+                    alert("Errore: " + data.error);
+                }
+            } catch(e) {
+                alert("Errore di comunicazione");
+            }
+        }
+
+        async function rejectWithdrawal(id) {
+            if(!confirm("Rifiutare il prelievo? I fondi torneranno al wallet utente.")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/withdrawals/${id}/reject`, { method: 'POST' });
+                if(res.ok) {
+                    showToast("Prelievo rifiutato");
+                    loadWithdrawals();
+                }
+            } catch(e) {
+                alert("Errore");
+            }
+        }
+
+        // Configuration
+        async function loadConfig() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/config`);
+                const config = await res.json();
+                
+                document.getElementById('config-maintenance').checked = config.maintenance_mode;
+                document.getElementById('config-timer').value = config.turn_timer;
+                document.getElementById('config-rake').value = config.rake_percentage;
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function saveConfig() {
+            const config = {
+                maintenance_mode: document.getElementById('config-maintenance').checked,
+                turn_timer: parseInt(document.getElementById('config-timer').value),
+                rake_percentage: parseFloat(document.getElementById('config-rake').value)
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/config`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+                if(res.ok) {
+                    showToast("Configurazione salvata!");
+                } else {
+                    alert("Errore salvataggio");
+                }
+            } catch(e) {
+                console.error(e);
             }
         }
 
@@ -535,6 +983,7 @@
                     <td>${user.level}</td>
                     <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                     <td>
+                        <button class="btn btn-info btn-sm" onclick="openUserDetails(${user.id})" title="Dettagli"><i class="fas fa-eye"></i></button>
                         <button class="btn btn-primary btn-sm" onclick="openEditModal(${user.id}, '${user.username}', ${user.wallet_balance || 0})" title="Modifica Saldo"><i class="fas fa-edit"></i></button>
                         ${user.is_banned 
                             ? `<button class="btn btn-success btn-sm" onclick="toggleBan(${user.id}, false)" title="Sbanna"><i class="fas fa-check"></i></button>`
@@ -552,11 +1001,10 @@
                 u.username.toLowerCase().includes(lower) || 
                 u.email.toLowerCase().includes(lower)
             );
-            // Re-render manually to avoid fetching again
+            // Quick re-render logic (duplicated for brevity, ideally refactor)
             const tbody = document.getElementById('users-table-body');
             tbody.innerHTML = '';
             filtered.forEach(user => {
-                 // Reuse render logic... (simplified for brevity)
                  const tr = document.createElement('tr');
                  let statusClass = user.is_banned ? 'status-banned' : (user.is_online ? 'status-online' : 'status-offline');
                  let statusText = user.is_banned ? 'BANNATO' : (user.is_online ? 'Online' : 'Offline');
@@ -569,6 +1017,7 @@
                     <td>${user.level}</td>
                     <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                     <td>
+                        <button class="btn btn-info btn-sm" onclick="openUserDetails(${user.id})"><i class="fas fa-eye"></i></button>
                         <button class="btn btn-primary btn-sm" onclick="openEditModal(${user.id}, '${user.username}', ${user.wallet_balance || 0})"><i class="fas fa-edit"></i></button>
                         ${user.is_banned 
                             ? `<button class="btn btn-success btn-sm" onclick="toggleBan(${user.id}, false)"><i class="fas fa-check"></i></button>`
@@ -584,6 +1033,11 @@
             const container = document.getElementById('tables-container');
             container.innerHTML = '';
             
+            if(tables.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-dim)">Nessun tavolo attivo.</p>';
+                return;
+            }
+
             tables.forEach(table => {
                 const div = document.createElement('div');
                 div.className = 'card';
@@ -593,8 +1047,9 @@
                     <p style="color: var(--text-dim); margin-top: 5px;">Blinds: €${table.small_blind}/€${table.big_blind}</p>
                     <p style="color: var(--text-dim);">Pot: €${table.pot}</p>
                     <p style="margin-top: 5px;"><span class="status-badge status-online">${table.phase}</span></p>
-                    <div style="margin-top: 15px;">
-                        <button class="btn btn-danger btn-sm" onclick="closeTable('${table.id}')">Chiudi Tavolo</button>
+                    <div style="margin-top: 15px; display: flex; gap: 5px;">
+                        <button class="btn btn-primary btn-sm" onclick="openEditTableModal('${table.id}', '${table.name}', ${table.small_blind}, ${table.big_blind}, ${table.min_buy_in}, ${table.max_buy_in})"><i class="fas fa-edit"></i> Edit</button>
+                        <button class="btn btn-danger btn-sm" onclick="closeTable('${table.id}')">Chiudi</button>
                     </div>
                 `;
                 container.appendChild(div);
@@ -603,8 +1058,70 @@
             document.getElementById('active-tables').innerText = tables.length;
         }
 
+        function renderClosedTables(tables) {
+            const container = document.getElementById('closed-tables-container');
+            container.innerHTML = '';
+            
+            if(tables.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-dim)">Nessun tavolo chiuso recentemente.</p>';
+                return;
+            }
+
+            tables.forEach(table => {
+                const div = document.createElement('div');
+                div.className = 'card';
+                div.style.borderColor = '#30363d';
+                div.style.opacity = '0.8';
+                
+                div.innerHTML = `
+                    <h3>${table.game_name} <span style="float:right; font-size:12px">ID: ${table.id}</span></h3>
+                    <p style="color: var(--text-dim); margin-top: 5px;">Creatore: ${table.creator_name}</p>
+                    <p style="color: var(--text-dim);">Blinds: €${table.small_blind}/€${table.big_blind}</p>
+                    <p style="margin-top: 5px;"><span class="status-badge status-offline">${table.status}</span></p>
+                    <p style="color: var(--text-dim); font-size: 12px; margin-top:5px">Chiuso il: ${new Date(table.created_at).toLocaleDateString()}</p>
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-success btn-sm" onclick="reactivateTable(${table.id})"><i class="fas fa-power-off"></i> Riapri</button>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        async function restoreDefaults() {
+            if(!confirm("Vuoi ripristinare i tavoli di default mancanti?")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/restore_defaults`, { method: 'POST' });
+                const data = await res.json();
+                if(data.success) {
+                    showToast(`Ripristinati ${data.restored.length} tavoli`);
+                    refreshTables();
+                } else {
+                    alert("Errore: " + data.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function reactivateTable(id) {
+            if(!confirm("Vuoi riattivare questo tavolo?")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/${id}/reactivate`, { method: 'POST' });
+                if(res.ok) {
+                    showToast("Tavolo riattivato!");
+                    refreshTables();
+                } else {
+                    const data = await res.json();
+                    alert("Errore: " + data.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
         // Actions
         let currentEditingUserId = null;
+        let currentEditingTableId = null;
 
         function openEditModal(id, username, chips) {
             currentEditingUserId = id;
@@ -613,9 +1130,82 @@
             document.getElementById('edit-chips').value = chips;
             document.getElementById('editModal').style.display = 'flex';
         }
+        
+        function openEditTableModal(id, name, sb, bb, min, max) {
+            currentEditingTableId = id;
+            document.getElementById('edit-table-id').value = id;
+            document.getElementById('edit-table-name').value = name;
+            document.getElementById('edit-sb').value = sb;
+            document.getElementById('edit-bb').value = bb;
+            document.getElementById('edit-min').value = min;
+            document.getElementById('edit-max').value = max;
+            document.getElementById('editTableModal').style.display = 'flex';
+        }
 
-        function closeModal() {
-            document.getElementById('editModal').style.display = 'none';
+        async function saveTableUpdate() {
+            const id = currentEditingTableId;
+            const data = {
+                small_blind: parseFloat(document.getElementById('edit-sb').value),
+                big_blind: parseFloat(document.getElementById('edit-bb').value),
+                min_buy_in: parseFloat(document.getElementById('edit-min').value),
+                max_buy_in: parseFloat(document.getElementById('edit-max').value)
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/${id}/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                if (res.ok) {
+                    showToast("Tavolo aggiornato e riavviato!");
+                    document.getElementById('editTableModal').style.display = 'none';
+                    refreshTables();
+                } else {
+                    const err = await res.json();
+                    alert("Errore: " + err.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function openUserDetails(id) {
+            try {
+                const res = await fetch(`${API_BASE}/admin/users/${id}/details`);
+                const data = await res.json();
+                
+                document.getElementById('details-username').innerText = data.user.username;
+                document.getElementById('d-email').innerText = data.user.email;
+                document.getElementById('d-created').innerText = new Date(data.user.created_at).toLocaleDateString();
+                document.getElementById('d-games').innerText = data.stats.games_played || 0;
+                document.getElementById('d-wins').innerText = data.stats.games_won || 0;
+                document.getElementById('d-chips-won').innerText = data.stats.chips_won || 0;
+                document.getElementById('d-chips-lost').innerText = data.stats.chips_lost || 0;
+                document.getElementById('d-ips').innerText = data.ips.join(', ');
+
+                const tbody = document.getElementById('d-history-body');
+                tbody.innerHTML = '';
+                data.history.forEach(h => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${h.game_type}</td>
+                        <td>${h.result}</td>
+                        <td style="color: ${h.chips_change >= 0 ? 'var(--success)' : 'var(--danger)'}">
+                            ${h.chips_change}
+                        </td>
+                        <td>${new Date(h.created_at).toLocaleDateString()}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                document.getElementById('detailsModal').style.display = 'flex';
+
+            } catch(e) {
+                console.error(e);
+                alert("Errore caricamento dettagli");
+            }
         }
 
         async function saveUser() {
@@ -631,7 +1221,7 @@
                 
                 if (res.ok) {
                     showToast("Saldo aggiornato con successo");
-                    closeModal();
+                    document.getElementById('editModal').style.display = 'none';
                     refreshData();
                 } else {
                     alert("Errore durante l'aggiornamento");
@@ -706,6 +1296,7 @@
 
         // Init
         refreshData();
+        loadAnalytics(); // Initial load for charts
         setInterval(refreshData, 5000); // Auto refresh every 5s
     </script>
 </body>
