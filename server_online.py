@@ -50,14 +50,16 @@ class Deck:
 class HandEvaluator:
     @staticmethod
     def evaluate(hole_cards, community_cards):
-        # Basic implementation - returns (score, description)
-        # Score is a tuple/number for comparison
         cards = hole_cards + community_cards
         if not cards:
             return (0, "No Hand")
             
         # Sort by rank desc
         cards.sort(key=lambda c: c.rank, reverse=True)
+        
+        # Base Multipliers (using 10 Billion steps to avoid overlap with internal scores)
+        # Max internal score (High Card) is roughly 1.5 Billion (14 * 100^4)
+        BASE = 10_000_000_000
         
         # Check Flush
         suits = {}
@@ -82,17 +84,28 @@ class HandEvaluator:
                 break
         # Wheel straight (A, 2, 3, 4, 5)
         if not straight_ranks and 14 in unique_ranks and 2 in unique_ranks and 3 in unique_ranks and 4 in unique_ranks and 5 in unique_ranks:
-            straight_ranks = [5, 4, 3, 2, 14] # Treated as 5-high straight
+            straight_ranks = [5, 4, 3, 2, 14] # 5-high straight
             
         # Check Straight Flush
-        if flush_suit and straight_ranks:
-            # Need to verify if the straight cards are in the flush suit
-            sf_cards = [c for c in cards if c.suit == flush_suit]
-            sf_ranks = sorted([c.rank for c in sf_cards], reverse=True)
-            for i in range(len(sf_ranks) - 4):
-                window = sf_ranks[i:i+5]
+        sf_ranks = []
+        if flush_suit:
+            sf_cards_all = [c for c in cards if c.suit == flush_suit]
+            sf_unique_ranks = sorted(list(set(c.rank for c in sf_cards_all)), reverse=True)
+            for i in range(len(sf_unique_ranks) - 4):
+                window = sf_unique_ranks[i:i+5]
                 if window[0] - window[4] == 4:
-                    return (8000000 + window[0], "Straight Flush")
+                    sf_ranks = window
+                    break
+            if not sf_ranks and 14 in sf_unique_ranks and 2 in sf_unique_ranks and 3 in sf_unique_ranks and 4 in sf_unique_ranks and 5 in sf_unique_ranks:
+                sf_ranks = [5, 4, 3, 2, 14]
+
+        # 1. Royal Flush
+        if sf_ranks and sf_ranks[0] == 14 and sf_ranks[-1] != 14: # Normal Ace High SF (avoids wheel check confusion though A is 14)
+             return (9 * BASE, "Royal Flush")
+             
+        # 2. Straight Flush
+        if sf_ranks:
+            return (8 * BASE + sf_ranks[0] * 1000000, "Straight Flush")
         
         # Count ranks
         rank_counts = {}
@@ -112,52 +125,46 @@ class HandEvaluator:
         three_kind.sort(reverse=True)
         pairs.sort(reverse=True)
         
-        # 1. Royal Flush
-        if flush_suit and straight_ranks and straight_ranks[0] == 14:
-            return (9000000, "Royal Flush")
-            
-        # 2. Straight Flush (Handled above)
-        
         # 3. Four of a Kind
         if four_kind:
             kicker = max([r for r in unique_ranks if r != four_kind[0]])
-            return (7000000 + four_kind[0] * 100 + kicker, "Four of a Kind")
+            return (7 * BASE + four_kind[0] * 100**4 + kicker * 100**3, "Four of a Kind")
             
         # 4. Full House
         if three_kind and (len(three_kind) >= 2 or pairs):
             t = three_kind[0]
             p = three_kind[1] if len(three_kind) >= 2 else pairs[0]
-            return (6000000 + t * 100 + p, "Full House")
+            return (6 * BASE + t * 100**4 + p * 100**3, "Full House")
             
         # 5. Flush
         if flush_suit:
-            score = 5000000
+            score = 5 * BASE
             for i, c in enumerate(flush_cards):
                 score += c.rank * (100 ** (4-i))
             return (score, "Flush")
             
         # 6. Straight
         if straight_ranks:
-            return (4000000 + straight_ranks[0], "Straight")
+            return (4 * BASE + straight_ranks[0] * 100**4, "Straight")
             
         # 7. Three of a Kind
         if three_kind:
             kickers = sorted([r for r in unique_ranks if r != three_kind[0]], reverse=True)[:2]
-            return (3000000 + three_kind[0] * 10000 + kickers[0] * 100 + kickers[1], "Three of a Kind")
+            return (3 * BASE + three_kind[0] * 100**4 + kickers[0] * 100**3 + kickers[1] * 100**2, "Three of a Kind")
             
         # 8. Two Pair
         if len(pairs) >= 2:
             p1 = pairs[0]
             p2 = pairs[1]
             kicker = max([r for r in unique_ranks if r != p1 and r != p2])
-            return (2000000 + p1 * 10000 + p2 * 100 + kicker, "Two Pair")
+            return (2 * BASE + p1 * 100**4 + p2 * 100**3 + kicker * 100**2, "Two Pair")
             
         # 9. One Pair
         if pairs:
             kickers = sorted([r for r in unique_ranks if r != pairs[0]], reverse=True)[:3]
-            score = 1000000 + pairs[0] * 1000000
+            score = 1 * BASE + pairs[0] * 100**4
             for i, k in enumerate(kickers):
-                score += k * (100 ** (2-i))
+                score += k * (100 ** (3-i))
             return (score, "Pair")
             
         # 10. High Card
@@ -470,6 +477,7 @@ class PokerTable:
         if action == "fold":
             player['folded'] = True
             player['cards'] = []
+            player['last_action'] = "FOLD"
             
         elif action == "call":
             to_call = self.current_bet - player['current_bet']
@@ -482,10 +490,13 @@ class PokerTable:
             player['current_bet'] += to_call
             self.pot += to_call
             self.round_bets[user_id] = player['current_bet']
+            player['last_action'] = "CALL"
+            if player['all_in']: player['last_action'] = "ALL-IN"
             
         elif action == "check":
             if player['current_bet'] < self.current_bet:
                 return False, "Cannot check, must call"
+            player['last_action'] = "CHECK"
                 
         elif action == "raise":
             if amount < self.current_bet * 2: # Min raise
@@ -504,9 +515,11 @@ class PokerTable:
             self.pot += to_add
             self.current_bet = total_bet
             self.round_bets[user_id] = player['current_bet']
+            player['last_action'] = "RAISE"
             
             if player['chips'] == 0:
                 player['all_in'] = True
+                player['last_action'] = "ALL-IN"
 
         # Check if round complete or next player
         self.players_acted.add(user_id)
@@ -567,6 +580,12 @@ class PokerTable:
         # Reset current bets for next street
         for uid in self.active_seat_order:
             self.players[uid]['current_bet'] = 0.0
+            # Keep last_action visible for a bit? Or reset?
+            # If we reset, people might miss what happened.
+            # But new street starts with no actions.
+            # Let's reset it.
+            self.players[uid]['last_action'] = ""
+            
         self.current_bet = 0.0
         self.players_acted = set()
         
@@ -670,7 +689,8 @@ class PokerTable:
                 'has_cards': len(p['cards']) > 0,
                 'cards': cards,
                 'folded': p['folded'],
-                'all_in': p['all_in']
+                'all_in': p['all_in'],
+                'last_action': p.get('last_action', '')
             }
             players_state.append(player_state)
         
@@ -700,8 +720,45 @@ class PokerServer:
         self.db_path = "poker_database.db"
         self.tables = {}  # table_id -> PokerTable
         self.user_tables = {}  # user_id -> table_id (active table)
+        self.table_timers = {} # table_id -> asyncio.Task
         self._init_default_tables()
     
+    def _start_turn_timer(self, table_id):
+        # Cancel existing
+        if table_id in self.table_timers:
+            self.table_timers[table_id].cancel()
+            del self.table_timers[table_id]
+        
+        if table_id in self.tables:
+            table = self.tables[table_id]
+            if table.game_phase not in ["waiting", "showdown"] and table.current_player:
+                task = asyncio.create_task(self._turn_timeout_task(table_id, table.current_player, 30))
+                self.table_timers[table_id] = task
+
+    async def _turn_timeout_task(self, table_id, player_id, duration):
+        try:
+            await asyncio.sleep(duration)
+            if table_id in self.tables:
+                table = self.tables[table_id]
+                if table.current_player == player_id and table.game_phase not in ["waiting", "showdown"]:
+                    # Force action: Check if possible, else Fold
+                    player = table.players.get(player_id)
+                    if player:
+                        action = "fold"
+                        if player['current_bet'] == table.current_bet:
+                            action = "check"
+                        
+                        print(f"Timeout for user {player_id} at table {table_id}. Forcing {action}.")
+                        success, msg = table.handle_action(player_id, action)
+                        if success:
+                            # Set to sit out
+                            table.players[player_id]['is_sitting_out'] = True
+                            await self.broadcast_table_state(table_id)
+                            # Trigger next timer
+                            self._start_turn_timer(table_id)
+        except asyncio.CancelledError:
+            pass
+
     def _init_default_tables(self):
         # Create default cash game tables with cent-based blinds
         default_tables = [
@@ -1531,6 +1588,7 @@ class PokerServer:
                 
                 # Notify all players at table
                 await self.broadcast_table_state(table_id)
+                self._start_turn_timer(table_id)
                 
                 return {
                     "type": "cash_table_joined",
@@ -1665,6 +1723,7 @@ class PokerServer:
             if success:
                 self.user_tables[user_id] = table_id
                 await self.broadcast_table_state(table_id)
+                self._start_turn_timer(table_id)
                 
                 return {
                     "type": "friend_game_joined",
@@ -1962,11 +2021,17 @@ class PokerServer:
             if table.game_phase == "showdown":
                 # Notify winners
                 await self.broadcast_table_state(table_id)
+                # Cancel timer if any
+                if table_id in self.table_timers:
+                    self.table_timers[table_id].cancel()
+                
                 # Wait 5 seconds then restart (async sleep in background task would be better but blocking here for simplicity is risky)
                 # We should trigger a delayed restart. 
                 # For now, let's just leave it at showdown. 
                 # Ideally: asyncio.create_task(self.restart_hand(table_id))
                 asyncio.create_task(self.restart_hand(table_id))
+            else:
+                self._start_turn_timer(table_id)
                 
             return {"type": "action_result", "success": True}
         else:
@@ -1978,6 +2043,7 @@ class PokerServer:
             table = self.tables[table_id]
             table.start_hand()
             await self.broadcast_table_state(table_id)
+            self._start_turn_timer(table_id)
 
     async def handle_message(self, ws, message: str):
         try:
@@ -2064,9 +2130,26 @@ class PokerServer:
                 # Handle leaving table on disconnect
                 table_id = self.user_tables.get(user_id)
                 if table_id and table_id in self.tables:
-                    # Keep player at table but mark as disconnected
-                    # They can reconnect
-                    pass
+                    table = self.tables[table_id]
+                    # Mark as sitting out
+                    if user_id in table.players:
+                        table.players[user_id]['is_sitting_out'] = True
+                        
+                        # If it was their turn, force fold/check to unblock game
+                        if table.current_player == user_id and table.game_phase not in ["waiting", "showdown"]:
+                            action = "fold"
+                            if table.players[user_id]['current_bet'] == table.current_bet:
+                                action = "check"
+                            table.handle_action(user_id, action)
+                            self._start_turn_timer(table_id)
+                            
+                        # Broadcast update
+                        # We need to run this async, but we are in finally block of an async function
+                        # so we can await
+                        try:
+                            await self.broadcast_table_state(table_id)
+                        except:
+                            pass
             print(f"Connection closed: {ws.remote_address}")
     
     async def run(self, host: str = "0.0.0.0", port: int = None):
