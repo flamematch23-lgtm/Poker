@@ -1026,6 +1026,43 @@ class PokerServer:
                 "success": True,
                 "message": "Password reimpostata con successo! Ora puoi effettuare il login."
             }
+
+    async def handle_change_password(self, ws, data: dict):
+        user_id = self.connections.get(ws)
+        if not user_id:
+            return {"type": "change_password_result", "success": False, "error": "Non autenticato"}
+            
+        old_password = data.get('old_password', '')
+        new_password = data.get('new_password', '')
+        
+        if not old_password or not new_password:
+            return {"type": "change_password_result", "success": False, "error": "Tutti i campi sono richiesti"}
+            
+        if len(new_password) < 6:
+            return {"type": "change_password_result", "success": False, "error": "La password deve avere almeno 6 caratteri"}
+            
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+            user = await cursor.fetchone()
+            
+            if not user:
+                return {"type": "change_password_result", "success": False, "error": "Utente non trovato"}
+                
+            # Verify old password
+            if self.hash_password(old_password) != user['password_hash']:
+                return {"type": "change_password_result", "success": False, "error": "Vecchia password non corretta"}
+                
+            # Update to new password
+            new_hash = self.hash_password(new_password)
+            await db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
+            await db.commit()
+            
+            return {
+                "type": "change_password_result",
+                "success": True, 
+                "message": "Password modificata con successo"
+            }
     
     async def handle_get_wallet(self, ws, data: dict):
         user_id = self.connections.get(ws)
@@ -1699,10 +1736,17 @@ class PokerServer:
                         friend_name = table.players[fid]['username']
                     
                     friend_games.append({
-                        "friend_username": friend_name,
-                        "table_name": table.name,
+                        "id": table_id,
+                        "name": table.name,
                         "game_type": "Private" if table.is_private else "Cash Game",
-                        "blinds": f"€{table.small_blind:.2f}/€{table.big_blind:.2f}",
+                        "creator": friend_name, # Shows the friend who is playing
+                        "current_players": len(table.players),
+                        "max_players": table.max_players,
+                        "buy_in": table.min_buy_in,
+                        "small_blind": table.small_blind,
+                        "big_blind": table.big_blind,
+                        "status": table.game_phase,
+                        "blinds": f"€{table.small_blind:.2f}/€{table.big_blind:.2f}", # Keep for backward compat if needed
                         "players": f"{len(table.players)}/{table.max_players}",
                         "table_id": table_id
                     })
@@ -1778,10 +1822,10 @@ class PokerServer:
             db.row_factory = aiosqlite.Row
             if leaderboard_type == 'winnings':
                 cursor = await db.execute("""
-                    SELECT u.username, s.total_chips_won as score, u.level
+                    SELECT u.username, s.games_won as score, u.level
                     FROM statistics s
                     JOIN users u ON s.user_id = u.id
-                    ORDER BY s.total_chips_won DESC LIMIT 20
+                    ORDER BY s.games_won DESC LIMIT 20
                 """)
             else: # chips
                 cursor = await db.execute("""
@@ -1871,6 +1915,7 @@ class PokerServer:
                 'get_security_question': self.handle_get_security_question,
                 'verify_security_answer': self.handle_verify_security_answer,
                 'reset_password': self.handle_reset_password,
+                'change_password': self.handle_change_password,
                 'get_wallet': self.handle_get_wallet,
                 'create_deposit': self.handle_create_deposit,
                 'wallet_deposit': self.handle_create_deposit, # Alias for client
