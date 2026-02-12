@@ -30,7 +30,11 @@ SERVER_CONFIG = {
     "rake_percentage": 0.0 # Future use
 }
 
-CONFIG_FILE = "server_config.json"
+# PERSISTENT CONFIG PATH
+DATA_DIR = os.path.join(os.path.expanduser("~"), "poker_server_data")
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+CONFIG_FILE = os.path.join(DATA_DIR, "server_config.json")
 
 def load_config():
     global SERVER_CONFIG
@@ -761,7 +765,15 @@ class PokerServer:
         self.connections = {}  # websocket -> user_id
         self.user_connections = {}  # user_id -> websocket
         self.paypal = PayPalClient()
-        self.db_path = "poker_database.db"
+        
+        # PERSISTENT DATABASE PATH
+        # Store database in user's home directory to prevent data loss during server updates
+        self.data_dir = os.path.join(os.path.expanduser("~"), "poker_server_data")
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+            
+        self.db_path = os.path.join(self.data_dir, "poker_database.db")
+        
         self.tables = {}  # table_id -> PokerTable
         self.user_tables = {}  # user_id -> table_id (active table)
         self.table_timers = {} # table_id -> asyncio.Task
@@ -2164,7 +2176,7 @@ class PokerServer:
             await ws.send(json.dumps({"type": "error", "error": str(e)}))
     
     async def handle_websocket_request(self, request):
-        ws = web.WebSocketResponse()
+        ws = web.WebSocketResponse(heartbeat=30.0) # Enable heartbeat
         await ws.prepare(request)
         
         adapter = WebSocketAdapter(ws, request)
@@ -2178,11 +2190,18 @@ class PokerServer:
             return ws
 
         try:
+            # Set ping/pong timeout to prevent ghost connections
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     await self.handle_message(adapter, msg.data)
                 elif msg.type == WSMsgType.ERROR:
                     print('ws connection closed with exception %s', ws.exception())
+                elif msg.type == WSMsgType.PING:
+                    await ws.pong()
+        except asyncio.CancelledError:
+            pass # Server shutdown
+        except ConnectionResetError:
+            pass # Client disconnected abruptly
         except Exception as e:
             print(f"WS Exception: {e}")
         finally:
@@ -2742,6 +2761,7 @@ class PokerServer:
         await self.init_db()
         print(f"Poker Server v14 starting on {host}:{port}")
         print(f"Database file: {os.path.abspath(self.db_path)}")
+        print(f"Data Directory: {os.path.abspath(self.data_dir)}")
         print(f"Password recovery: ENABLED")
         print(f"PayPal: {'Configured' if PAYPAL_CLIENT_ID else 'Not configured'}")
         
