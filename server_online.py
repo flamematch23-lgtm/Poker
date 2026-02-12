@@ -298,7 +298,7 @@ class PayPalClient:
 
 class PokerTable:
     def __init__(self, table_id: str, name: str, small_blind: float, big_blind: float, 
-                 min_buy_in: float, max_buy_in: float, max_players: int = 6):
+                 min_buy_in: float, max_buy_in: float, max_players: int = 6, creator_id: int = None, creator_username: str = "Unknown"):
         self.table_id = table_id
         self.name = name
         self.small_blind = small_blind
@@ -306,6 +306,8 @@ class PokerTable:
         self.min_buy_in = min_buy_in
         self.max_buy_in = max_buy_in
         self.max_players = max_players
+        self.creator_id = creator_id
+        self.creator_username = creator_username
         self.players = {}  # user_id -> {username, chips, position, is_active, is_sitting_out, ...}
         self.spectators = set()
         self.dealer_position = 0
@@ -444,13 +446,25 @@ class PokerTable:
             player['all_in'] = True
 
     def handle_action(self, user_id: int, action: str, amount: float = 0):
+        player = self.players[user_id]
+
+        if action == "sitout":
+            player['is_sitting_out'] = True
+            # If in active hand, fold
+            if self.game_phase != "waiting" and self.game_phase != "showdown" and not player['folded']:
+                 self.handle_action(user_id, "fold")
+            return True, "Sitting out"
+            
+        if action == "sitin":
+            player['is_sitting_out'] = False
+            return True, "Sitting in"
+
         if self.game_phase == "waiting" or self.game_phase == "showdown":
             return False, "Game not active"
             
         if user_id != self.current_player:
             return False, "Not your turn"
-            
-        player = self.players[user_id]
+        
         
         if action == "fold":
             player['folded'] = True
@@ -920,6 +934,9 @@ class PokerServer:
             self.connections[ws] = user_id
             self.user_connections[user_id] = ws
             
+            # Check for active table
+            active_table_id = self.user_tables.get(user_id)
+            
             return {
                 "type": "login_result",
                 "success": True,
@@ -929,6 +946,7 @@ class PokerServer:
                 "level": level,
                 "avatar_id": user['avatar_id'] if 'avatar_id' in user.keys() else 0,
                 "wallet_balance": balance,
+                "active_table_id": active_table_id,
                 "message": "Login effettuato!"
             }
     
@@ -1515,6 +1533,11 @@ class PokerServer:
             return {"type": "friend_game_created", "success": False, "error": "Password deve avere almeno 4 caratteri"}
         
         async with aiosqlite.connect(self.db_path) as db:
+            # Get username
+            cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            creator_username = row[0] if row else "Unknown"
+
             cursor = await db.execute(
                 """INSERT INTO private_games (creator_id, game_name, password, small_blind, big_blind, min_buy_in, max_buy_in, max_players)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1525,7 +1548,7 @@ class PokerServer:
             
             # Create actual poker table
             table_id = f"private_{game_id}"
-            table = PokerTable(table_id, game_name, small_blind, big_blind, min_buy_in, max_buy_in, max_players)
+            table = PokerTable(table_id, game_name, small_blind, big_blind, min_buy_in, max_buy_in, max_players, creator_id=user_id, creator_username=creator_username)
             table.is_private = True
             table.password = password
             self.tables[table_id] = table
@@ -1710,52 +1733,67 @@ class PokerServer:
         if not user_id:
             return {"type": "friend_games_list", "success": False, "error": "Non autenticato"}
         
-        # 1. Get friends list
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                """SELECT CASE WHEN user_id = ? THEN friend_id ELSE user_id END as fid
-                   FROM friends 
-                   WHERE (user_id = ? OR friend_id = ?) AND status = 'accepted'""",
-                (user_id, user_id, user_id)
-            )
-            rows = await cursor.fetchall()
-            friend_ids = [row['fid'] for row in rows]
-            
         friend_games = []
         
-        # 2. Check if friends are playing
-        for fid in friend_ids:
-            if fid in self.user_tables:
-                table_id = self.user_tables[fid]
-                if table_id in self.tables:
-                    table = self.tables[table_id]
-                    # Get friend username
-                    friend_name = "Unknown"
-                    if fid in table.players:
-                        friend_name = table.players[fid]['username']
-                    
-                    friend_games.append({
-                        "id": table_id,
-                        "name": table.name,
-                        "game_type": "Private" if table.is_private else "Cash Game",
-                        "creator": friend_name, # Shows the friend who is playing
-                        "current_players": len(table.players),
-                        "max_players": table.max_players,
-                        "buy_in": table.min_buy_in,
-                        "small_blind": table.small_blind,
-                        "big_blind": table.big_blind,
-                        "status": table.game_phase,
-                        "blinds": f"€{table.small_blind:.2f}/€{table.big_blind:.2f}", # Keep for backward compat if needed
-                        "players": f"{len(table.players)}/{table.max_players}",
-                        "table_id": table_id
-                    })
+        # Return ALL private tables (not just friends) so creators can see their own tables
+        for table_id, table in self.tables.items():
+            if table.is_private:
+                friend_games.append({
+                    "id": table_id,
+                    "name": table.name,
+                    "game_type": "Private",
+                    "creator": table.creator_username,
+                    "creator_id": table.creator_id,
+                    "current_players": len(table.players),
+                    "max_players": table.max_players,
+                    "buy_in": table.min_buy_in,
+                    "small_blind": table.small_blind,
+                    "big_blind": table.big_blind,
+                    "status": table.game_phase,
+                    "blinds": f"€{table.small_blind:.2f}/€{table.big_blind:.2f}",
+                    "players": f"{len(table.players)}/{table.max_players}",
+                    "table_id": table_id
+                })
         
         return {
             "type": "friend_games_list",
             "success": True,
             "games": friend_games
         }
+
+    async def handle_delete_friend_game(self, ws, data: dict):
+        user_id = self.connections.get(ws)
+        if not user_id:
+            return {"type": "delete_friend_game_result", "success": False, "error": "Non autenticato"}
+            
+        table_id = data.get('table_id')
+        if not table_id or table_id not in self.tables:
+            return {"type": "delete_friend_game_result", "success": False, "error": "Tavolo non trovato"}
+            
+        table = self.tables[table_id]
+        
+        # Check if creator
+        if table.creator_id != user_id:
+            return {"type": "delete_friend_game_result", "success": False, "error": "Solo il creatore può eliminare il tavolo"}
+            
+        # Check if empty
+        if len(table.players) > 0:
+             return {"type": "delete_friend_game_result", "success": False, "error": "Impossibile eliminare: ci sono giocatori al tavolo"}
+             
+        # Delete
+        del self.tables[table_id]
+        
+        # Update DB status
+        if table_id.startswith("private_"):
+            try:
+                game_id = int(table_id.split("_")[1])
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute("UPDATE private_games SET status = 'closed' WHERE id = ?", (game_id,))
+                    await db.commit()
+            except:
+                pass
+                
+        return {"type": "delete_friend_game_result", "success": True, "table_id": table_id}
 
     async def handle_get_game_history(self, ws, data: dict):
         user_id = self.connections.get(ws)
@@ -1849,7 +1887,7 @@ class PokerServer:
             return {"type": "avatar_update_result", "success": False, "error": "Non autenticato"}
         
         avatar_id = data.get('avatar_id')
-        if not isinstance(avatar_id, int) or avatar_id < 0 or avatar_id > 20: # Assuming max 20 avatars
+        if not isinstance(avatar_id, int) or avatar_id < 0 or avatar_id > 50: # Increased limit for new avatars
             return {"type": "avatar_update_result", "success": False, "error": "Avatar non valido"}
             
         async with aiosqlite.connect(self.db_path) as db:
@@ -1946,6 +1984,8 @@ class PokerServer:
                 'call': self.handle_game_action,
                 'raise': self.handle_game_action,
                 'fold': self.handle_game_action,
+                'sitout': self.handle_game_action,
+                'sitin': self.handle_game_action,
             }
             
             handler = handlers.get(action)
