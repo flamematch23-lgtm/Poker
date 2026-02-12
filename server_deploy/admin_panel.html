@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker Texas Admin Panel</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary: #0D1117;
+            --secondary: #161B22;
+            --accent: #FFD700;
+            --text: #ffffff;
+            --text-dim: #8b949e;
+            --danger: #f85149;
+            --success: #238636;
+            --warning: #d29922;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: var(--primary);
+            color: var(--text);
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 250px;
+            background-color: var(--secondary);
+            padding: 20px;
+            border-right: 1px solid #30363d;
+            position: fixed;
+            height: 100%;
+            overflow-y: auto;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--accent);
+            margin-bottom: 40px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .menu-item {
+            padding: 12px 15px;
+            cursor: pointer;
+            color: var(--text-dim);
+            transition: 0.3s;
+            border-radius: 6px;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            position: relative;
+        }
+
+        .menu-item:hover, .menu-item.active {
+            background-color: rgba(255, 215, 0, 0.1);
+            color: var(--accent);
+        }
+
+        .badge {
+            background-color: var(--danger);
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: auto;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: 250px;
+            padding: 30px;
+            width: 100%;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background-color: var(--secondary);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #30363d;
+        }
+
+        .card h3 {
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .card .value {
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--text);
+        }
+
+        /* Tables */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: var(--secondary);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .data-table th, .data-table td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid #30363d;
+        }
+
+        .data-table th {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .data-table tr:hover {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .status-online { background-color: rgba(35, 134, 54, 0.2); color: #3fb950; }
+        .status-offline { background-color: rgba(139, 148, 158, 0.2); color: #8b949e; }
+        .status-banned { background-color: rgba(248, 81, 73, 0.2); color: #f85149; }
+        .status-pending { background-color: rgba(210, 153, 34, 0.2); color: #d29922; }
+
+        .btn {
+            padding: 6px 12px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+
+        .btn-primary { background-color: var(--accent); color: var(--primary); }
+        .btn-danger { background-color: var(--danger); color: white; }
+        .btn-success { background-color: var(--success); color: white; }
+        .btn-info { background-color: #58a6ff; color: var(--primary); }
+        .btn-sm { font-size: 12px; padding: 4px 8px; }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: var(--secondary);
+            padding: 30px;
+            border-radius: 12px;
+            width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            border: 1px solid var(--accent);
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: var(--text-dim);
+        }
+
+        .form-group input, .form-group textarea, .form-group select {
+            width: 100%;
+            padding: 10px;
+            background: var(--primary);
+            border: 1px solid #30363d;
+            color: white;
+            border-radius: 4px;
+        }
+        
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+
+        .switch input { opacity: 0; width: 0; height: 0; }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #30363d;
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--success);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            background: var(--success);
+            color: white;
+            border-radius: 8px;
+            display: none;
+            animation: slideIn 0.3s ease;
+            z-index: 2000;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); }
+            to { transform: translateX(0); }
+        }
+
+        .section { display: none; }
+        .section.active { display: block; }
+        
+        /* Stats Grid for User Details */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-item {
+            background: var(--primary);
+            padding: 10px;
+            border-radius: 4px;
+        }
+        
+        .stat-label { color: var(--text-dim); font-size: 12px; }
+        .stat-value { font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="logo">
+            <i class="fas fa-spade"></i> PokerAdmin
+        </div>
+        <div class="menu-item active" onclick="showSection('dashboard')">
+            <i class="fas fa-chart-line"></i> Dashboard
+        </div>
+        <div class="menu-item" onclick="showSection('users')">
+            <i class="fas fa-users"></i> Utenti
+        </div>
+        <div class="menu-item" onclick="showSection('withdrawals')">
+            <i class="fas fa-money-bill-wave"></i> Prelievi
+            <span id="badge-withdrawals" class="badge" style="display:none">0</span>
+        </div>
+        <div class="menu-item" onclick="showSection('tables')">
+            <i class="fas fa-table"></i> Tavoli Attivi
+        </div>
+        <div class="menu-item" onclick="showSection('transactions')">
+            <i class="fas fa-exchange-alt"></i> Transazioni
+        </div>
+        <div class="menu-item" onclick="showSection('history')">
+            <i class="fas fa-history"></i> Storico Partite
+        </div>
+        <div class="menu-item" onclick="showSection('system')">
+            <i class="fas fa-cogs"></i> Sistema
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        
+        <!-- Dashboard Section -->
+        <div id="dashboard" class="section active">
+            <div class="header">
+                <h1>Dashboard</h1>
+                <button class="btn btn-primary" onclick="refreshData()"><i class="fas fa-sync"></i> Aggiorna</button>
+            </div>
+            
+            <div class="card-grid">
+                <div class="card">
+                    <h3>Utenti Totali</h3>
+                    <div class="value" id="total-users">0</div>
+                </div>
+                <div class="card">
+                    <h3>Utenti Online</h3>
+                    <div class="value" id="online-users">0</div>
+                </div>
+                <div class="card">
+                    <h3>Chips in Circolazione</h3>
+                    <div class="value" id="total-chips">€0</div>
+                </div>
+                <div class="card">
+                    <h3>Tavoli Attivi</h3>
+                    <div class="value" id="active-tables">0</div>
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="card-grid" style="grid-template-columns: 1fr 1fr;">
+                <div class="card">
+                    <h3>Trend Chips (Ultimi 7gg)</h3>
+                    <canvas id="chart-chips"></canvas>
+                </div>
+                <div class="card">
+                    <h3>Trend Utenti (Ultimi 7gg)</h3>
+                    <canvas id="chart-users"></canvas>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Stato Server</h3>
+                <div style="margin-top: 10px;">
+                    <p><i class="fas fa-check-circle" style="color: var(--success)"></i> Server Online (Port 8765)</p>
+                    <p><i class="fas fa-check-circle" style="color: var(--success)"></i> Admin Panel Online (Port 8766)</p>
+                    <p><i class="fas fa-database" style="color: var(--accent)"></i> Database: SQLite (v14)</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Users Section -->
+        <div id="users" class="section">
+            <div class="header">
+                <h1>Gestione Utenti</h1>
+                <input type="text" placeholder="Cerca utente..." style="padding: 8px; border-radius: 4px; border: none; background: var(--secondary); color: white;" onkeyup="filterUsers(this.value)">
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Wallet</th>
+                        <th>Livello</th>
+                        <th>Stato</th>
+                        <th>Azioni</th>
+                    </tr>
+                </thead>
+                <tbody id="users-table-body">
+                    <!-- Populated via JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Withdrawals Section -->
+        <div id="withdrawals" class="section">
+            <div class="header">
+                <h1>Richieste di Prelievo</h1>
+                <button class="btn btn-primary" onclick="loadWithdrawals()"><i class="fas fa-sync"></i> Aggiorna</button>
+            </div>
+            <p style="color: var(--text-dim); margin-bottom: 20px;">
+                Questi prelievi richiedono approvazione manuale. L'approvazione invierà automaticamente i fondi via PayPal.
+            </p>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Utente</th>
+                        <th>Importo</th>
+                        <th>Email PayPal</th>
+                        <th>Data Richiesta</th>
+                        <th>Azioni</th>
+                    </tr>
+                </thead>
+                <tbody id="withdrawals-table-body">
+                    <!-- Populated via JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Tables Section -->
+        <div id="tables" class="section">
+            <div class="header">
+                <h1>Gestione Tavoli</h1>
+                <div>
+                    <button class="btn btn-primary" onclick="restoreDefaults()"><i class="fas fa-undo"></i> Ripristina Default</button>
+                    <button class="btn btn-primary" onclick="refreshTables()"><i class="fas fa-sync"></i> Aggiorna</button>
+                </div>
+            </div>
+            
+            <h2 style="margin-bottom: 15px; font-size: 18px; color: var(--accent);">Tavoli Attivi</h2>
+            <div id="tables-container" class="card-grid">
+                <!-- Populated via JS -->
+            </div>
+
+            <h2 style="margin-top: 40px; margin-bottom: 15px; font-size: 18px; color: var(--text-dim);">Storico Partite Private (Chiuse)</h2>
+            <div id="closed-tables-container" class="card-grid">
+                <!-- Populated via JS -->
+            </div>
+        </div>
+
+        <!-- Transactions Section -->
+        <div id="transactions" class="section">
+            <div class="header">
+                <h1>Transazioni Recenti</h1>
+                <button class="btn btn-primary" onclick="loadTransactions()"><i class="fas fa-sync"></i> Aggiorna</button>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Utente</th>
+                        <th>Tipo</th>
+                        <th>Importo</th>
+                        <th>Stato</th>
+                        <th>Data</th>
+                        <th>Descrizione</th>
+                    </tr>
+                </thead>
+                <tbody id="transactions-table-body">
+                    <!-- Populated via JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- History Section -->
+        <div id="history" class="section">
+            <div class="header">
+                <h1>Storico Partite Globale</h1>
+                <button class="btn btn-primary" onclick="loadHistory()"><i class="fas fa-sync"></i> Aggiorna</button>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Utente</th>
+                        <th>Gioco</th>
+                        <th>Risultato</th>
+                        <th>Chips</th>
+                        <th>Mano</th>
+                        <th>Data</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table-body">
+                    <!-- Populated via JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- System Section -->
+        <div id="system" class="section">
+            <div class="header">
+                <h1>Sistema</h1>
+            </div>
+            
+            <div class="card-grid" style="grid-template-columns: 1fr 1fr;">
+                <!-- Configuration Card -->
+                <div class="card">
+                    <h3>Configurazione Server</h3>
+                    <p style="color: var(--text-dim); margin-bottom: 15px;">Modifica le impostazioni in tempo reale.</p>
+                    
+                    <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
+                        <label style="margin: 0;">Modalità Manutenzione</label>
+                        <label class="switch">
+                            <input type="checkbox" id="config-maintenance">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Timer Turno (secondi)</label>
+                        <input type="number" id="config-timer" min="10" max="120">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Rake (%) - Futuro</label>
+                        <input type="number" id="config-rake" min="0" max="10" step="0.1">
+                    </div>
+
+                    <button class="btn btn-success" onclick="saveConfig()">Salva Configurazione</button>
+                </div>
+
+                <!-- Broadcast Card -->
+                <div class="card">
+                    <h3>Invia Messaggio Globale</h3>
+                    <p style="color: var(--text-dim); margin-bottom: 15px;">Invia una notifica a tutti gli utenti connessi.</p>
+                    <div class="form-group">
+                        <textarea id="broadcast-message" rows="4" placeholder="Scrivi il messaggio qui..."></textarea>
+                    </div>
+                    <button class="btn btn-primary" onclick="sendBroadcast()">Invia Messaggio</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit User Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <h2>Modifica Saldo Utente</h2>
+            <br>
+            <input type="hidden" id="edit-user-id">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="edit-username" disabled>
+            </div>
+            <div class="form-group">
+                <label>Saldo Wallet (€)</label>
+                <input type="number" id="edit-chips" step="0.01">
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn" onclick="document.getElementById('editModal').style.display='none'">Annulla</button>
+                <button class="btn btn-primary" onclick="saveUser()">Salva</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Table Modal -->
+    <div id="editTableModal" class="modal">
+        <div class="modal-content">
+            <h2>Modifica Tavolo</h2>
+            <p style="color: var(--danger); font-size: 12px; margin-bottom: 15px;">
+                <i class="fas fa-exclamation-triangle"></i> Attenzione: Salvare chiuderà il tavolo corrente, rimborserà i giocatori e lo riaprirà con i nuovi parametri.
+            </p>
+            <input type="hidden" id="edit-table-id">
+            <div class="form-group">
+                <label>Nome Tavolo</label>
+                <input type="text" id="edit-table-name" disabled style="opacity: 0.7">
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex: 1">
+                    <label>Small Blind (€)</label>
+                    <input type="number" id="edit-sb" step="0.01">
+                </div>
+                <div class="form-group" style="flex: 1">
+                    <label>Big Blind (€)</label>
+                    <input type="number" id="edit-bb" step="0.01">
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex: 1">
+                    <label>Min Buy-in (€)</label>
+                    <input type="number" id="edit-min" step="0.01">
+                </div>
+                <div class="form-group" style="flex: 1">
+                    <label>Max Buy-in (€)</label>
+                    <input type="number" id="edit-max" step="0.01">
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn" onclick="document.getElementById('editTableModal').style.display='none'">Annulla</button>
+                <button class="btn btn-primary" onclick="saveTableUpdate()">Salva e Riavvia</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Details Modal -->
+    <div id="detailsModal" class="modal">
+        <div class="modal-content" style="width: 700px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 id="details-username">Dettagli Utente</h2>
+                <button class="btn btn-sm btn-danger" onclick="document.getElementById('detailsModal').style.display='none'"><i class="fas fa-times"></i></button>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Email</div>
+                    <div class="stat-value" id="d-email">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Data Registrazione</div>
+                    <div class="stat-value" id="d-created">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Partite Giocate</div>
+                    <div class="stat-value" id="d-games">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Vittorie</div>
+                    <div class="stat-value" id="d-wins">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Chips Vinte Totali</div>
+                    <div class="stat-value" id="d-chips-won">-</div>
+                </div>
+                 <div class="stat-item">
+                    <div class="stat-label">Chips Perse Totali</div>
+                    <div class="stat-value" id="d-chips-lost">-</div>
+                </div>
+            </div>
+
+            <h3>IP Recenti</h3>
+            <div class="stat-item" style="margin-bottom: 20px;">
+                <div class="stat-value" id="d-ips" style="font-family: monospace;">-</div>
+            </div>
+
+            <h3>Ultime Partite</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Gioco</th>
+                        <th>Risultato</th>
+                        <th>Chips</th>
+                        <th>Data</th>
+                    </tr>
+                </thead>
+                <tbody id="d-history-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">Operazione completata!</div>
+
+    <script>
+        const API_BASE = window.location.origin + '/api';
+
+        // Navigation
+        function showSection(id) {
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            
+            // Highlight menu item
+            const items = document.querySelectorAll('.menu-item');
+            const map = {
+                'dashboard': 0,
+                'users': 1,
+                'withdrawals': 2,
+                'tables': 3,
+                'transactions': 4,
+                'history': 5,
+                'system': 6
+            };
+            if(map[id] !== undefined) items[map[id]].classList.add('active');
+
+            if(id === 'transactions') loadTransactions();
+            else if(id === 'history') loadHistory();
+            else if(id === 'withdrawals') loadWithdrawals();
+            else if(id === 'system') loadConfig();
+            else if(id === 'dashboard') {
+                refreshData();
+                loadAnalytics();
+            }
+        }
+
+        // Data Fetching
+        async function refreshData() {
+            try {
+                const usersRes = await fetch(`${API_BASE}/admin/users`);
+                const users = await usersRes.json();
+                renderUsers(users);
+                updateStats(users);
+
+                refreshTables();
+                
+                // Update withdrawal badge
+                loadWithdrawals(true); 
+
+            } catch (e) {
+                console.error("Error fetching data:", e);
+            }
+        }
+
+        async function refreshTables() {
+            try {
+                const tablesRes = await fetch(`${API_BASE}/admin/tables`);
+                const tables = await tablesRes.json();
+                renderTables(tables);
+
+                const closedRes = await fetch(`${API_BASE}/admin/tables/closed`);
+                const closed = await closedRes.json();
+                renderClosedTables(closed);
+            } catch (e) {
+                console.error("Error fetching tables:", e);
+            }
+        }
+
+        // Charts
+        let chipsChart = null;
+        let usersChart = null;
+
+        async function loadAnalytics() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/analytics`);
+                const data = await res.json();
+                
+                // Setup Chips Chart
+                const ctxChips = document.getElementById('chart-chips').getContext('2d');
+                if(chipsChart) chipsChart.destroy();
+                
+                chipsChart = new Chart(ctxChips, {
+                    type: 'line',
+                    data: {
+                        labels: ['6gg fa', '5gg fa', '4gg fa', '3gg fa', '2gg fa', 'Ieri', 'Oggi'],
+                        datasets: [{
+                            label: 'Chips Totali',
+                            data: data.daily_chips,
+                            borderColor: '#FFD700',
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+
+                // Setup Users Chart
+                const ctxUsers = document.getElementById('chart-users').getContext('2d');
+                if(usersChart) usersChart.destroy();
+
+                usersChart = new Chart(ctxUsers, {
+                    type: 'bar',
+                    data: {
+                        labels: ['6gg fa', '5gg fa', '4gg fa', '3gg fa', '2gg fa', 'Ieri', 'Oggi'],
+                        datasets: [{
+                            label: 'Nuovi Utenti',
+                            data: data.daily_users,
+                            backgroundColor: '#238636'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+
+            } catch(e) {
+                console.error("Analytics error", e);
+            }
+        }
+
+        // Withdrawals
+        async function loadWithdrawals(onlyBadge = false) {
+            try {
+                const res = await fetch(`${API_BASE}/admin/withdrawals/pending`);
+                const list = await res.json();
+                
+                // Update badge
+                const badge = document.getElementById('badge-withdrawals');
+                if(list.length > 0) {
+                    badge.innerText = list.length;
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.style.display = 'none';
+                }
+
+                if(onlyBadge) return;
+
+                const tbody = document.getElementById('withdrawals-table-body');
+                tbody.innerHTML = '';
+                
+                if(list.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-dim)">Nessuna richiesta in attesa</td></tr>';
+                    return;
+                }
+
+                list.forEach(item => {
+                    const tr = document.createElement('tr');
+                    // Extract email from description "PayPal Payout: email"
+                    let email = item.description;
+                    if(email.includes(': ')) email = email.split(': ')[1];
+
+                    tr.innerHTML = `
+                        <td>${item.id}</td>
+                        <td>${item.username}</td>
+                        <td style="font-weight:bold; color: var(--accent)">€${item.amount.toFixed(2)}</td>
+                        <td>${email}</td>
+                        <td>${new Date(item.created_at).toLocaleString()}</td>
+                        <td>
+                            <button class="btn btn-success btn-sm" onclick="approveWithdrawal(${item.id})"><i class="fas fa-check"></i> Approva</button>
+                            <button class="btn btn-danger btn-sm" onclick="rejectWithdrawal(${item.id})"><i class="fas fa-times"></i> Rifiuta</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function approveWithdrawal(id) {
+            if(!confirm("Confermi l'approvazione? Verrà inviato un pagamento PayPal reale.")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/withdrawals/${id}/approve`, { method: 'POST' });
+                const data = await res.json();
+                if(data.success) {
+                    showToast("Prelievo approvato e inviato!");
+                    loadWithdrawals();
+                } else {
+                    alert("Errore: " + data.error);
+                }
+            } catch(e) {
+                alert("Errore di comunicazione");
+            }
+        }
+
+        async function rejectWithdrawal(id) {
+            if(!confirm("Rifiutare il prelievo? I fondi torneranno al wallet utente.")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/withdrawals/${id}/reject`, { method: 'POST' });
+                if(res.ok) {
+                    showToast("Prelievo rifiutato");
+                    loadWithdrawals();
+                }
+            } catch(e) {
+                alert("Errore");
+            }
+        }
+
+        // Configuration
+        async function loadConfig() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/config`);
+                const config = await res.json();
+                
+                document.getElementById('config-maintenance').checked = config.maintenance_mode;
+                document.getElementById('config-timer').value = config.turn_timer;
+                document.getElementById('config-rake').value = config.rake_percentage;
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function saveConfig() {
+            const config = {
+                maintenance_mode: document.getElementById('config-maintenance').checked,
+                turn_timer: parseInt(document.getElementById('config-timer').value),
+                rake_percentage: parseFloat(document.getElementById('config-rake').value)
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/config`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+                if(res.ok) {
+                    showToast("Configurazione salvata!");
+                } else {
+                    alert("Errore salvataggio");
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/game_history`);
+                const history = await res.json();
+                const tbody = document.getElementById('history-table-body');
+                tbody.innerHTML = '';
+                
+                history.forEach(h => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${h.id}</td>
+                        <td>${h.username}</td>
+                        <td>${h.game_type}</td>
+                        <td>${h.result}</td>
+                        <td style="color: ${h.chips_change >= 0 ? 'var(--success)' : 'var(--danger)'}">
+                            ${h.chips_change >= 0 ? '+' : ''}${h.chips_change}
+                        </td>
+                        <td>${h.hand || '-'}</td>
+                        <td>${new Date(h.created_at).toLocaleString()}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function loadTransactions() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/transactions`);
+                const txs = await res.json();
+                const tbody = document.getElementById('transactions-table-body');
+                tbody.innerHTML = '';
+                
+                txs.forEach(tx => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${tx.id}</td>
+                        <td>${tx.username}</td>
+                        <td><span class="status-badge" style="background: rgba(255,255,255,0.1)">${tx.type}</span></td>
+                        <td style="color: ${tx.amount >= 0 ? 'var(--success)' : 'var(--danger)'}">
+                            ${tx.amount >= 0 ? '+' : ''}€${Math.abs(tx.amount).toFixed(2)}
+                        </td>
+                        <td>${tx.status}</td>
+                        <td>${new Date(tx.created_at).toLocaleString()}</td>
+                        <td style="color: var(--text-dim)">${tx.description || '-'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        function updateStats(users) {
+            document.getElementById('total-users').innerText = users.length;
+            const online = users.filter(u => u.is_online).length;
+            document.getElementById('online-users').innerText = online;
+            
+            const totalChips = users.reduce((sum, u) => sum + (u.wallet_balance || 0), 0);
+            document.getElementById('total-chips').innerText = '€' + totalChips.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        let allUsers = [];
+
+        function renderUsers(users) {
+            allUsers = users;
+            const tbody = document.getElementById('users-table-body');
+            tbody.innerHTML = '';
+            
+            users.forEach(user => {
+                const tr = document.createElement('tr');
+                let statusClass = 'status-offline';
+                let statusText = 'Offline';
+                
+                if (user.is_banned) {
+                    statusClass = 'status-banned';
+                    statusText = 'BANNATO';
+                } else if (user.is_online) {
+                    statusClass = 'status-online';
+                    statusText = 'Online';
+                }
+
+                tr.innerHTML = `
+                    <td>${user.id}</td>
+                    <td>${user.username}</td>
+                    <td>${user.email}</td>
+                    <td>€${(user.wallet_balance || 0).toFixed(2)}</td>
+                    <td>${user.level}</td>
+                    <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                    <td>
+                        <button class="btn btn-info btn-sm" onclick="openUserDetails(${user.id})" title="Dettagli"><i class="fas fa-eye"></i></button>
+                        <button class="btn btn-primary btn-sm" onclick="openEditModal(${user.id}, '${user.username}', ${user.wallet_balance || 0})" title="Modifica Saldo"><i class="fas fa-edit"></i></button>
+                        ${user.is_banned 
+                            ? `<button class="btn btn-success btn-sm" onclick="toggleBan(${user.id}, false)" title="Sbanna"><i class="fas fa-check"></i></button>`
+                            : `<button class="btn btn-danger btn-sm" onclick="toggleBan(${user.id}, true)" title="Banna"><i class="fas fa-ban"></i></button>`
+                        }
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function filterUsers(query) {
+            const lower = query.toLowerCase();
+            const filtered = allUsers.filter(u => 
+                u.username.toLowerCase().includes(lower) || 
+                u.email.toLowerCase().includes(lower)
+            );
+            // Quick re-render logic (duplicated for brevity, ideally refactor)
+            const tbody = document.getElementById('users-table-body');
+            tbody.innerHTML = '';
+            filtered.forEach(user => {
+                 const tr = document.createElement('tr');
+                 let statusClass = user.is_banned ? 'status-banned' : (user.is_online ? 'status-online' : 'status-offline');
+                 let statusText = user.is_banned ? 'BANNATO' : (user.is_online ? 'Online' : 'Offline');
+                 
+                 tr.innerHTML = `
+                    <td>${user.id}</td>
+                    <td>${user.username}</td>
+                    <td>${user.email}</td>
+                    <td>€${(user.wallet_balance || 0).toFixed(2)}</td>
+                    <td>${user.level}</td>
+                    <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                    <td>
+                        <button class="btn btn-info btn-sm" onclick="openUserDetails(${user.id})"><i class="fas fa-eye"></i></button>
+                        <button class="btn btn-primary btn-sm" onclick="openEditModal(${user.id}, '${user.username}', ${user.wallet_balance || 0})"><i class="fas fa-edit"></i></button>
+                        ${user.is_banned 
+                            ? `<button class="btn btn-success btn-sm" onclick="toggleBan(${user.id}, false)"><i class="fas fa-check"></i></button>`
+                            : `<button class="btn btn-danger btn-sm" onclick="toggleBan(${user.id}, true)"><i class="fas fa-ban"></i></button>`
+                        }
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderTables(tables) {
+            const container = document.getElementById('tables-container');
+            container.innerHTML = '';
+            
+            if(tables.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-dim)">Nessun tavolo attivo.</p>';
+                return;
+            }
+
+            tables.forEach(table => {
+                const div = document.createElement('div');
+                div.className = 'card';
+                div.innerHTML = `
+                    <h3>${table.name} <span style="float:right; color: var(--text-dim)">#${table.id}</span></h3>
+                    <div class="value">${table.players}/${table.max_players}</div>
+                    <p style="color: var(--text-dim); margin-top: 5px;">Blinds: €${table.small_blind}/€${table.big_blind}</p>
+                    <p style="color: var(--text-dim);">Pot: €${table.pot}</p>
+                    <p style="margin-top: 5px;"><span class="status-badge status-online">${table.phase}</span></p>
+                    <div style="margin-top: 15px; display: flex; gap: 5px;">
+                        <button class="btn btn-primary btn-sm" onclick="openEditTableModal('${table.id}', '${table.name}', ${table.small_blind}, ${table.big_blind}, ${table.min_buy_in}, ${table.max_buy_in})"><i class="fas fa-edit"></i> Edit</button>
+                        <button class="btn btn-danger btn-sm" onclick="closeTable('${table.id}')">Chiudi</button>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+            
+            document.getElementById('active-tables').innerText = tables.length;
+        }
+
+        function renderClosedTables(tables) {
+            const container = document.getElementById('closed-tables-container');
+            container.innerHTML = '';
+            
+            if(tables.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-dim)">Nessun tavolo chiuso recentemente.</p>';
+                return;
+            }
+
+            tables.forEach(table => {
+                const div = document.createElement('div');
+                div.className = 'card';
+                div.style.borderColor = '#30363d';
+                div.style.opacity = '0.8';
+                
+                div.innerHTML = `
+                    <h3>${table.game_name} <span style="float:right; font-size:12px">ID: ${table.id}</span></h3>
+                    <p style="color: var(--text-dim); margin-top: 5px;">Creatore: ${table.creator_name}</p>
+                    <p style="color: var(--text-dim);">Blinds: €${table.small_blind}/€${table.big_blind}</p>
+                    <p style="margin-top: 5px;"><span class="status-badge status-offline">${table.status}</span></p>
+                    <p style="color: var(--text-dim); font-size: 12px; margin-top:5px">Chiuso il: ${new Date(table.created_at).toLocaleDateString()}</p>
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-success btn-sm" onclick="reactivateTable(${table.id})"><i class="fas fa-power-off"></i> Riapri</button>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        async function restoreDefaults() {
+            if(!confirm("Vuoi ripristinare i tavoli di default mancanti?")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/restore_defaults`, { method: 'POST' });
+                const data = await res.json();
+                if(data.success) {
+                    showToast(`Ripristinati ${data.restored.length} tavoli`);
+                    refreshTables();
+                } else {
+                    alert("Errore: " + data.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function reactivateTable(id) {
+            if(!confirm("Vuoi riattivare questo tavolo?")) return;
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/${id}/reactivate`, { method: 'POST' });
+                if(res.ok) {
+                    showToast("Tavolo riattivato!");
+                    refreshTables();
+                } else {
+                    const data = await res.json();
+                    alert("Errore: " + data.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        // Actions
+        let currentEditingUserId = null;
+        let currentEditingTableId = null;
+
+        function openEditModal(id, username, chips) {
+            currentEditingUserId = id;
+            document.getElementById('edit-user-id').value = id;
+            document.getElementById('edit-username').value = username;
+            document.getElementById('edit-chips').value = chips;
+            document.getElementById('editModal').style.display = 'flex';
+        }
+        
+        function openEditTableModal(id, name, sb, bb, min, max) {
+            currentEditingTableId = id;
+            document.getElementById('edit-table-id').value = id;
+            document.getElementById('edit-table-name').value = name;
+            document.getElementById('edit-sb').value = sb;
+            document.getElementById('edit-bb').value = bb;
+            document.getElementById('edit-min').value = min;
+            document.getElementById('edit-max').value = max;
+            document.getElementById('editTableModal').style.display = 'flex';
+        }
+
+        async function saveTableUpdate() {
+            const id = currentEditingTableId;
+            const data = {
+                small_blind: parseFloat(document.getElementById('edit-sb').value),
+                big_blind: parseFloat(document.getElementById('edit-bb').value),
+                min_buy_in: parseFloat(document.getElementById('edit-min').value),
+                max_buy_in: parseFloat(document.getElementById('edit-max').value)
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/${id}/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                if (res.ok) {
+                    showToast("Tavolo aggiornato e riavviato!");
+                    document.getElementById('editTableModal').style.display = 'none';
+                    refreshTables();
+                } else {
+                    const err = await res.json();
+                    alert("Errore: " + err.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function openUserDetails(id) {
+            try {
+                const res = await fetch(`${API_BASE}/admin/users/${id}/details`);
+                const data = await res.json();
+                
+                document.getElementById('details-username').innerText = data.user.username;
+                document.getElementById('d-email').innerText = data.user.email;
+                document.getElementById('d-created').innerText = new Date(data.user.created_at).toLocaleDateString();
+                document.getElementById('d-games').innerText = data.stats.games_played || 0;
+                document.getElementById('d-wins').innerText = data.stats.games_won || 0;
+                document.getElementById('d-chips-won').innerText = data.stats.chips_won || 0;
+                document.getElementById('d-chips-lost').innerText = data.stats.chips_lost || 0;
+                document.getElementById('d-ips').innerText = data.ips.join(', ');
+
+                const tbody = document.getElementById('d-history-body');
+                tbody.innerHTML = '';
+                data.history.forEach(h => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${h.game_type}</td>
+                        <td>${h.result}</td>
+                        <td style="color: ${h.chips_change >= 0 ? 'var(--success)' : 'var(--danger)'}">
+                            ${h.chips_change}
+                        </td>
+                        <td>${new Date(h.created_at).toLocaleDateString()}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                document.getElementById('detailsModal').style.display = 'flex';
+
+            } catch(e) {
+                console.error(e);
+                alert("Errore caricamento dettagli");
+            }
+        }
+
+        async function saveUser() {
+            const id = currentEditingUserId;
+            const chips = parseFloat(document.getElementById('edit-chips').value);
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/users/${id}/balance`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount: chips })
+                });
+                
+                if (res.ok) {
+                    showToast("Saldo aggiornato con successo");
+                    document.getElementById('editModal').style.display = 'none';
+                    refreshData();
+                } else {
+                    alert("Errore durante l'aggiornamento");
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function toggleBan(id, shouldBan) {
+            const action = shouldBan ? "bannare" : "sbannare";
+            if(!confirm(`Sei sicuro di voler ${action} questo utente?`)) return;
+            
+            const endpoint = shouldBan ? 'ban' : 'unban';
+            try {
+                const res = await fetch(`${API_BASE}/admin/users/${id}/${endpoint}`, { method: 'POST' });
+                if(res.ok) {
+                    showToast(`Utente ${shouldBan ? 'bannato' : 'sbannato'}!`);
+                    refreshData();
+                } else {
+                    alert("Errore operazione");
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function closeTable(id) {
+            if(!confirm("Sei sicuro di voler chiudere forzatamente questo tavolo? Tutti i giocatori verranno rimborsati.")) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/${id}`, { method: 'DELETE' });
+                if(res.ok) {
+                    showToast("Tavolo chiuso con successo");
+                    refreshData();
+                } else {
+                    alert("Errore durante la chiusura del tavolo");
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function sendBroadcast() {
+            const msg = document.getElementById('broadcast-message').value;
+            if(!msg) return alert("Inserisci un messaggio");
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/broadcast`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                });
+                const data = await res.json();
+                if(data.success) {
+                    showToast(`Messaggio inviato a ${data.count} utenti`);
+                    document.getElementById('broadcast-message').value = '';
+                } else {
+                    alert("Errore invio: " + data.error);
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 3000);
+        }
+
+        // Init
+        refreshData();
+        loadAnalytics(); // Initial load for charts
+        setInterval(refreshData, 5000); // Auto refresh every 5s
+    </script>
+</body>
+</html>
