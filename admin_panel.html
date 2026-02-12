@@ -237,6 +237,9 @@
         <div class="menu-item" onclick="showSection('transactions')">
             <i class="fas fa-exchange-alt"></i> Transazioni
         </div>
+        <div class="menu-item" onclick="showSection('history')">
+            <i class="fas fa-history"></i> Storico Partite
+        </div>
         <div class="menu-item" onclick="showSection('system')">
             <i class="fas fa-cogs"></i> Sistema
         </div>
@@ -339,6 +342,30 @@
             </table>
         </div>
 
+        <!-- History Section -->
+        <div id="history" class="section">
+            <div class="header">
+                <h1>Storico Partite Globale</h1>
+                <button class="btn btn-primary" onclick="loadHistory()"><i class="fas fa-sync"></i> Aggiorna</button>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Utente</th>
+                        <th>Gioco</th>
+                        <th>Risultato</th>
+                        <th>Chips</th>
+                        <th>Mano</th>
+                        <th>Data</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table-body">
+                    <!-- Populated via JS -->
+                </tbody>
+            </table>
+        </div>
+
         <!-- System Section -->
         <div id="system" class="section">
             <div class="header">
@@ -393,9 +420,11 @@
             if(id === 'users') items[1].classList.add('active');
             if(id === 'tables') items[2].classList.add('active');
             if(id === 'transactions') items[3].classList.add('active');
-            if(id === 'system') items[4].classList.add('active');
+            if(id === 'history') items[4].classList.add('active');
+            if(id === 'system') items[5].classList.add('active');
 
             if(id === 'transactions') loadTransactions();
+            else if(id === 'history') loadHistory();
             else refreshData();
         }
 
@@ -412,6 +441,33 @@
                 renderTables(tables);
             } catch (e) {
                 console.error("Error fetching data:", e);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const res = await fetch(`${API_BASE}/admin/game_history`);
+                const history = await res.json();
+                const tbody = document.getElementById('history-table-body');
+                tbody.innerHTML = '';
+                
+                history.forEach(h => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${h.id}</td>
+                        <td>${h.username}</td>
+                        <td>${h.game_type}</td>
+                        <td>${h.result}</td>
+                        <td style="color: ${h.chips_change >= 0 ? 'var(--success)' : 'var(--danger)'}">
+                            ${h.chips_change >= 0 ? '+' : ''}${h.chips_change}
+                        </td>
+                        <td>${h.hand || '-'}</td>
+                        <td>${new Date(h.created_at).toLocaleString()}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch(e) {
+                console.error(e);
             }
         }
 
@@ -537,6 +593,9 @@
                     <p style="color: var(--text-dim); margin-top: 5px;">Blinds: €${table.small_blind}/€${table.big_blind}</p>
                     <p style="color: var(--text-dim);">Pot: €${table.pot}</p>
                     <p style="margin-top: 5px;"><span class="status-badge status-online">${table.phase}</span></p>
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-danger btn-sm" onclick="closeTable('${table.id}')">Chiudi Tavolo</button>
+                    </div>
                 `;
                 container.appendChild(div);
             });
@@ -594,6 +653,22 @@
                     refreshData();
                 } else {
                     alert("Errore operazione");
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function closeTable(id) {
+            if(!confirm("Sei sicuro di voler chiudere forzatamente questo tavolo? Tutti i giocatori verranno rimborsati.")) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/admin/tables/${id}`, { method: 'DELETE' });
+                if(res.ok) {
+                    showToast("Tavolo chiuso con successo");
+                    refreshData();
+                } else {
+                    alert("Errore durante la chiusura del tavolo");
                 }
             } catch(e) {
                 console.error(e);

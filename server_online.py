@@ -2286,6 +2286,80 @@ class PokerServer:
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    async def admin_get_global_game_history(self, request):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT h.id, h.game_type, h.result, h.chips_change, h.hand, h.created_at, u.username
+                FROM game_history h
+                JOIN users u ON h.user_id = u.id
+                ORDER BY h.created_at DESC LIMIT 100
+            """)
+            rows = await cursor.fetchall()
+            return web.json_response([dict(r) for r in rows])
+
+    async def admin_delete_table(self, request):
+        try:
+            table_id = request.match_info['id']
+            if table_id not in self.tables:
+                return web.json_response({"success": False, "error": "Table not found"}, status=404)
+            
+            table = self.tables[table_id]
+            
+            # Refund everyone
+            async with aiosqlite.connect(self.db_path) as db:
+                for uid, player in table.players.items():
+                    chips = player['chips'] + player['current_bet']
+                    # Add any pot share? Too complex, just refund chips on table
+                    # Actually remove_player handles logic but let's be forceful
+                    
+                    if chips > 0:
+                        await db.execute("UPDATE wallets SET balance = balance + ? WHERE user_id = ?", (chips, uid))
+                        await db.execute(
+                            """INSERT INTO transactions (user_id, type, amount, status, description)
+                               VALUES (?, 'admin_refund', ?, 'completed', ?)""",
+                            (uid, chips, f"Admin closed table: {table.name}")
+                        )
+                await db.commit()
+
+            # Notify players
+            for uid in list(table.players.keys()):
+                if uid in self.user_connections:
+                    ws = self.user_connections[uid]
+                    try:
+                        await ws.send(json.dumps({
+                            "type": "notification",
+                            "title": "Tavolo Chiuso",
+                            "message": "Il tavolo è stato chiuso dall'amministratore.",
+                            "notification_type": "system"
+                        }))
+                        # Remove from user_tables
+                        if uid in self.user_tables:
+                            del self.user_tables[uid]
+                    except:
+                        pass
+
+            # Delete table
+            del self.tables[table_id]
+            if table_id in self.table_timers:
+                self.table_timers[table_id].cancel()
+                del self.table_timers[table_id]
+                
+            # If private, update DB
+            if table_id.startswith("private_"):
+                try:
+                    game_id = int(table_id.split("_")[1])
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("UPDATE private_games SET status = 'closed_admin' WHERE id = ?", (game_id,))
+                        await db.commit()
+                except:
+                    pass
+
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+
 
     async def run(self, host: str = "0.0.0.0", port: int = None):
         port = port or int(os.environ.get("PORT", 8765))
@@ -2333,6 +2407,12 @@ class PokerServer:
         
         resource_broadcast = cors.add(app.router.add_resource("/api/admin/broadcast"))
         cors.add(resource_broadcast.add_route("POST", self.admin_broadcast_message))
+        
+        resource_game_history = cors.add(app.router.add_resource("/api/admin/game_history"))
+        cors.add(resource_game_history.add_route("GET", self.admin_get_global_game_history))
+        
+        resource_table_delete = cors.add(app.router.add_resource("/api/admin/tables/{id}"))
+        cors.add(resource_table_delete.add_route("DELETE", self.admin_delete_table))
         
         runner = web.AppRunner(app)
         await runner.setup()

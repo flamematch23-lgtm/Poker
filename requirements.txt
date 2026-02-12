@@ -2,3 +2,4 @@ websockets
 aiosqlite
 requests
 aiohttp
+aiohttp_cors
